@@ -45,8 +45,8 @@ const Ic=(n,s=18,c='')=>html`<svg width=${s} height=${s} viewBox="0 0 24 24" fil
 
 /* ---- reconocimiento de fincas ---- */
 const CN={};ALL.forEach(f=>CN[norm(f)]=f);
-const PAT=[...Object.keys(CN).map(k=>[k,CN[k]]),['LA CEIBA','CEIBA'],['MERCEDES','LAS MERCEDES'],['JOSEFINA MARIA TERESA','JOSEFINA MT'],['JOSEFINA M T','JOSEFINA MT'],['MARIA TERESA','JOSEFINA MT'],['JOSEFINA','JOSEFINA MT'],['GISELLE','GISELLE BEATRIZ'],['LOS ANGELES','ANGELES'],['NARANJITO','NARANJITOS'],['MARTES','MARTE']].sort((a,b)=>b[0].length-a[0].length);
-const findF=(t,mt)=>{let s=' '+norm(t).replace(/[._\-–—/]+/g,' ').replace(/\s+/g,' ')+' ';s=s.replace(/\bGLORIA\s+MERCEDES\b/g,' ').replace(/\b(?!LA\b)[A-Z]+\s+CEIBA\b/g,' ');const r=[];for(const [k,f] of PAT){if(k==='MARTES'&&!mt)continue;const re=new RegExp('(?<![A-Z])'+k+'(?![A-Z])','g');if(re.test(s)){s=s.replace(re,' ');if(!r.includes(f))r.push(f)}}return r};
+const PAT=[...Object.keys(CN).map(k=>[k,CN[k]]),['LA CEIBA','CEIBA'],['VIJAGUAL BUFFER','VIJAGUAL'],['MERCEDES','LAS MERCEDES'],['JOSEFINA MARIA TERESA','JOSEFINA MT'],['JOSEFINA M T','JOSEFINA MT'],['MARIA TERESA','JOSEFINA MT'],['JOSEFINA','JOSEFINA MT'],['GISELLE','GISELLE BEATRIZ'],['LOS ANGELES','ANGELES'],['NARANJITO','NARANJITOS'],['MARTES','MARTE']].sort((a,b)=>b[0].length-a[0].length);
+const findF=(t,mt)=>{let s=' '+norm(t).replace(/[._\-–—/]+/g,' ').replace(/\s+/g,' ')+' ';s=s.replace(/\b(COOMULBANANO|EMPREBANCOOP|BANAFRUCOOP|COOBAMAG|UNIBAN|TECNIBAN)\s+[A-Z0-9]+(?:\s+[A-Z0-9]+)?\b/g,' ').replace(/\bGLORIA\s+MERCEDES\b/g,' ').replace(/\b(?!LA\b)[A-Z0-9]+\s+CEIBA\b/g,' ').replace(/\b[A-Z0-9]+\s+VIJAGUAL\b/g,' ').replace(/\bVIJAGUAL\s+(?!BUFFER\b)[A-Z]{2,}\b/g,' ');const r=[];for(const [k,f] of PAT){if(k==='MARTES'&&!mt)continue;const re=new RegExp('(?<![A-Z])'+k+'(?![A-Z])','g');if(re.test(s)){s=s.replace(re,' ');if(!r.includes(f))r.push(f)}}return r};
 function parseAsp(t){const out=[];let wk=null,dy=null;for(const raw of t.split(/\r?\n/)){const line=norm(raw).replace(/(MERCEDES)\s*-?\s*[A-D](?:\s*[,/&-]\s*[A-D](?![A-Z]))*(?![A-Z])/g,'$1');if(!line.trim())continue;const m=line.match(/SEM(?:ANA)?\s*\.?\s*(\d{1,2})(?!\d)/);if(m){wk=+m[1];dy=null}
 const cells=line.split(/[,;\t|]/);
 if(m&&cells.length>=4){cells.slice(1,8).forEach((c,i)=>findF(c,true).forEach(f=>out.push([wk,i,f])));continue}
@@ -57,22 +57,35 @@ if(wk!==null&&dy!==null)findF(rest,false).forEach(f=>out.push([wk,dy,f]))}
 return out}
 
 /* ---- PDF e IA ---- */
-async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';
+async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';const OPS=pdfjsLib.OPS;
 for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const tc=await p.getTextContent();const items=tc.items.filter(it=>it.str.trim());
 const full=items.map(it=>it.str).join(' ');const wm=norm(full).match(/SEMANA\s*(\d{1,2})/);if(wm)text+=`SEM ${wm[1]}\n`;
 const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*\d{1,2}\s+DE\s+[A-Z]+/i;
-const days=items.filter(it=>dayRe.test(norm(it.str.trim()))).map(it=>({d:norm(it.str.trim()).match(dayRe)[1],y:it.transform[5]})).sort((a,b)=>b.y-a.y);
-if(days.length){const rows={};items.forEach(it=>{if(it.transform[4]<120||it.transform[4]>300)return;const y=Math.round(it.transform[5]/4)*4;(rows[y]=rows[y]||[]).push(it)});
+const days=items.filter(it=>dayRe.test(norm(it.str.trim()))).map(it=>({d:norm(it.str.trim()).match(dayRe)[1],x:it.transform[4],y:it.transform[5]})).sort((a,b)=>b.y-a.y);
+if(days.length){const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[];
+const mul=(m1,m2)=>[m1[0]*m2[0]+m1[2]*m2[1],m1[1]*m2[0]+m1[3]*m2[1],m1[0]*m2[2]+m1[2]*m2[3],m1[1]*m2[2]+m1[3]*m2[3],m1[0]*m2[4]+m1[2]*m2[5]+m1[4],m1[1]*m2[4]+m1[3]*m2[5]+m1[5]];
+const pt=(x,y)=>[ctm[0]*x+ctm[2]*y+ctm[4],ctm[1]*x+ctm[3]*y+ctm[5]];
+const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);if(Math.abs(ay-by)<2.5&&Math.abs(bx-ax)>25)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2})};
+const addRect=(x,y,w,h)=>{addSeg(x,y,x+w,y);addSeg(x,y+h,x+w,y+h)};
+for(let k=0;k<opList.fnArray.length;k++){const fn=opList.fnArray[k],args=opList.argsArray[k];
+if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=stk.pop()}else if(fn===OPS.transform)ctm=mul(ctm,args);
+else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
+else if(fn===OPS.constructPath&&args){const subOps=Array.isArray(args[0])?args[0]:[args[0]];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
+if(rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0;for(const so of subOps){if(so===OPS.moveTo){cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}
+const boxes=days.map((dy,idx)=>{const colYs=hSegs.filter(s=>s.x1<=dy.x+15&&s.x2>=dy.x+25).map(s=>s.y);
+const above=colYs.filter(y=>y>dy.y+1),below=colYs.filter(y=>y<dy.y-1);
+const yTop=above.length?Math.min(...above):(idx>0?(days[idx-1].y+dy.y)/2:1e9);
+const yBottom=below.length?Math.max(...below):(idx<days.length-1?(dy.y+days[idx+1].y)/2:-1e9);
+return {d:dy.d,yTop,yBottom,cy:dy.y}});
+const fh=items.find(it=>/^FINCA$/i.test(it.str.trim()));const fxMin=fh?fh.transform[4]-25:120,fxMax=fh?fh.transform[4]+155:310;
+const rows={};items.forEach(it=>{if(it.transform[4]<fxMin||it.transform[4]>fxMax)return;const y=Math.round(it.transform[5]/4)*4;(rows[y]=rows[y]||[]).push(it)});
 const lines=Object.keys(rows).sort((a,b)=>b-a).map(y=>({y:+y,t:rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
-lines.forEach((r,idx)=>{let best=days[0],min=1e9;days.forEach(dy=>{const dist=Math.abs(dy.y-r.y);if(dist<min){min=dist;best=dy}});
-const prevY=idx>0?lines[idx-1].y:1e9,nextY=idx<lines.length-1?lines[idx+1].y:-1e9;
-const inRange=days.filter(dy=>dy.y<=prevY+6&&dy.y>=nextY-6);const chosen=inRange.length?inRange[0]:best;
-text+=`${chosen.d} ${r.t}\n`})}
+lines.forEach(r=>{const hit=boxes.find(b=>r.y<=b.yTop+1&&r.y>=b.yBottom-1)||boxes.reduce((a,b)=>Math.abs(b.cy-r.y)<Math.abs(a.cy-r.y)?b:a);text+=`${hit.d} ${r.t}\n`})}
 else{const rows={};items.forEach(it=>{const y=Math.round(it.transform[5]);(rows[y]=rows[y]||[]).push(it)});
 text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')).join('\n')+'\n'}
-if(img){const v=p.getViewport({scale:1.6});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
+if(img){const v=p.getViewport({scale:2.5});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
-async function shrink(b){try{const bm=await createImageBitmap(b);const k=Math.min(1,2000/Math.max(bm.width,bm.height));const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(bm,0,0,c.width,c.height);return await new Promise(r=>c.toBlob(r,'image/jpeg',0.85))}catch(e){return b}}
+async function shrink(b){try{const bm=await createImageBitmap(b);const k=Math.min(1,2800/Math.max(bm.width,bm.height));const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(bm,0,0,c.width,c.height);return await new Promise(r=>c.toBlob(r,'image/jpeg',0.92))}catch(e){return b}}
 const b64=b=>new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(String(fr.result).split(',')[1]);fr.readAsDataURL(b)});
 /* Lectura de imágenes/PDF con Claude a través de la función serverless /api/leer (clave ANTHROPIC_API_KEY en Vercel) */
 async function ai(prompt,images){try{const imgs=[];for(const b of images||[]){const s=await shrink(b);imgs.push({type:s.type||'image/jpeg',data:await b64(s)})}
