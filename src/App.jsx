@@ -72,15 +72,15 @@ if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=
 else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
 else if(fn===OPS.constructPath&&args){const subOps=Array.isArray(args[0])?args[0]:[args[0]];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
 if(rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0;for(const so of subOps){if(so===OPS.moveTo){cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}
-const boxes=days.map((dy,idx)=>{const colYs=hSegs.filter(s=>s.x1<=dy.x+15&&s.x2>=dy.x+25).map(s=>s.y);
-const above=colYs.filter(y=>y>dy.y+1),below=colYs.filter(y=>y<dy.y-1);
-const yTop=above.length?Math.min(...above):(idx>0?(days[idx-1].y+dy.y)/2:1e9);
-const yBottom=below.length?Math.max(...below):(idx<days.length-1?(dy.y+days[idx+1].y)/2:-1e9);
-return {d:dy.d,yTop,yBottom,cy:dy.y}});
+const fechaMinX=Math.min(...days.map(d=>d.x));
+const allYs=hSegs.filter(s=>s.x1<=fechaMinX+5&&s.x2>=fechaMinX+20).map(s=>s.y).sort((a,b)=>b-a);
+const cutYs=[];let last=1e9;allYs.forEach(y=>{if(last-y>2){cutYs.push(y);last=y}});
+const boxes=days.map((dy,idx)=>{const above=cutYs.filter(y=>y>dy.y+2),below=cutYs.filter(y=>y<dy.y-2);
+return {d:dy.d,yTop:above.length?Math.min(...above):(idx>0?(days[idx-1].y+dy.y)/2:1e9),yBottom:below.length?Math.max(...below):(idx<days.length-1?(dy.y+days[idx+1].y)/2:-1e9),cy:dy.y}});
 const fh=items.find(it=>/^FINCA$/i.test(it.str.trim()));const fxMin=fh?fh.transform[4]-25:120,fxMax=fh?fh.transform[4]+155:310;
 const rows={};items.forEach(it=>{if(it.transform[4]<fxMin||it.transform[4]>fxMax)return;const y=Math.round(it.transform[5]/4)*4;(rows[y]=rows[y]||[]).push(it)});
 const lines=Object.keys(rows).sort((a,b)=>b-a).map(y=>({y:+y,t:rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
-lines.forEach(r=>{const hit=boxes.find(b=>r.y<=b.yTop+1&&r.y>=b.yBottom-1)||boxes.reduce((a,b)=>Math.abs(b.cy-r.y)<Math.abs(a.cy-r.y)?b:a);text+=`${hit.d} ${r.t}\n`})}
+lines.forEach(r=>{const hit=boxes.find(b=>r.y<=b.yTop+2&&r.y>=b.yBottom-2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.y)<Math.abs(a.cy-r.y)?b:a);text+=`${hit.d} ${r.t}\n`})}
 else{const rows={};items.forEach(it=>{const y=Math.round(it.transform[5]);(rows[y]=rows[y]||[]).push(it)});
 text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')).join('\n')+'\n'}
 if(img){const v=p.getViewport({scale:2.5});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
