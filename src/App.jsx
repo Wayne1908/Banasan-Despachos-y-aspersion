@@ -58,31 +58,40 @@ return out}
 
 /* ---- PDF e IA ---- */
 async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';const OPS=pdfjsLib.OPS;
-for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const tc=await p.getTextContent();const items=tc.items.filter(it=>it.str.trim());
-const full=items.map(it=>it.str).join(' ');const wm=norm(full).match(/SEMANA\s*(\d{1,2})/);if(wm)text+=`SEM ${wm[1]}\n`;
-const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*\d{1,2}\s+DE\s+[A-Z]+/i;
-const days=items.filter(it=>dayRe.test(norm(it.str.trim()))).map(it=>({d:norm(it.str.trim()).match(dayRe)[1],x:it.transform[4],y:it.transform[5]})).sort((a,b)=>b.y-a.y);
+const meses={ENERO:0,FEBRERO:1,MARZO:2,ABRIL:3,MAYO:4,JUNIO:5,JULIO:6,AGOSTO:7,SEPTIEMBRE:8,OCTUBRE:9,NOVIEMBRE:10,DICIEMBRE:11};
+const isoWk=(d,m,y)=>{const dt=new Date(Date.UTC(y,m,d));const day=(dt.getUTCDay()+6)%7;dt.setUTCDate(dt.getUTCDate()-day+3);const w1=new Date(Date.UTC(dt.getUTCFullYear(),0,4));return 1+Math.round(((dt-w1)/864e5-3+(w1.getUTCDay()+6)%7)/7)};
+for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const vp=p.getViewport({scale:1});const tc=await p.getTextContent();
+const items=tc.items.filter(it=>it.str.trim()).map(it=>{const [vx,vy]=vp.convertToViewportPoint(it.transform[4],it.transform[5]);return {str:it.str,vx,vy}});
+const rAll={};items.forEach(it=>{const y=Math.round(it.vy/5)*5;(rAll[y]=rAll[y]||[]).push(it)});
+const sortedTxt=Object.keys(rAll).sort((a,b)=>a-b).map(y=>rAll[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')).join('\n');
+const wm=norm(sortedTxt).match(/SEMANA\s*[:\-]?\s*(\d{1,2})/);if(wm)text+=`SEM ${wm[1]}\n`;
+const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)\s+DE\s+(20\d\d)/i;
+const days=items.map(it=>({it,m:norm(it.str.trim()).match(dayRe)})).filter(x=>x.m).map(x=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],yy:+x.m[4],vx:x.it.vx,vy:x.it.vy})).sort((a,b)=>a.vy-b.vy);
+if(!wm&&days.length&&days[0].mm!==undefined)text+=`SEM ${isoWk(days[0].dd,days[0].mm,days[0].yy)}\n`;
 if(days.length){const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[];
 const mul=(m1,m2)=>[m1[0]*m2[0]+m1[2]*m2[1],m1[1]*m2[0]+m1[3]*m2[1],m1[0]*m2[2]+m1[2]*m2[3],m1[1]*m2[2]+m1[3]*m2[3],m1[0]*m2[4]+m1[2]*m2[5]+m1[4],m1[1]*m2[4]+m1[3]*m2[5]+m1[5]];
-const pt=(x,y)=>[ctm[0]*x+ctm[2]*y+ctm[4],ctm[1]*x+ctm[3]*y+ctm[5]];
-const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);if(Math.abs(ay-by)<2.5&&Math.abs(bx-ax)>25)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2})};
+const pt=(x,y)=>{const px=ctm[0]*x+ctm[2]*y+ctm[4],py=ctm[1]*x+ctm[3]*y+ctm[5];return vp.convertToViewportPoint(px,py)};
+const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);if(Math.abs(ay-by)<3&&Math.abs(bx-ax)>25)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2})};
 const addRect=(x,y,w,h)=>{addSeg(x,y,x+w,y);addSeg(x,y+h,x+w,y+h)};
 for(let k=0;k<opList.fnArray.length;k++){const fn=opList.fnArray[k],args=opList.argsArray[k];
 if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=stk.pop()}else if(fn===OPS.transform)ctm=mul(ctm,args);
 else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
 else if(fn===OPS.constructPath&&args){const subOps=Array.isArray(args[0])?args[0]:[args[0]];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
 if(rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0;for(const so of subOps){if(so===OPS.moveTo){cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}
-const fechaMinX=Math.min(...days.map(d=>d.x));
-const allYs=hSegs.filter(s=>s.x1<=fechaMinX+5&&s.x2>=fechaMinX+20).map(s=>s.y).sort((a,b)=>b-a);
-const cutYs=[];let last=1e9;allYs.forEach(y=>{if(last-y>2){cutYs.push(y);last=y}});
-const boxes=days.map((dy,idx)=>{const above=cutYs.filter(y=>y>dy.y+2),below=cutYs.filter(y=>y<dy.y-2);
-return {d:dy.d,yTop:above.length?Math.min(...above):(idx>0?(days[idx-1].y+dy.y)/2:1e9),yBottom:below.length?Math.max(...below):(idx<days.length-1?(dy.y+days[idx+1].y)/2:-1e9),cy:dy.y}});
-const fh=items.find(it=>/^FINCA$/i.test(it.str.trim()));const fxMin=fh?fh.transform[4]-25:120,fxMax=fh?fh.transform[4]+155:310;
-const rows={};items.forEach(it=>{if(it.transform[4]<fxMin||it.transform[4]>fxMax)return;const y=Math.round(it.transform[5]/4)*4;(rows[y]=rows[y]||[]).push(it)});
-const lines=Object.keys(rows).sort((a,b)=>b-a).map(y=>({y:+y,t:rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
-lines.forEach(r=>{const hit=boxes.find(b=>r.y<=b.yTop+2&&r.y>=b.yBottom-2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.y)<Math.abs(a.cy-r.y)?b:a);text+=`${hit.d} ${r.t}\n`})}
-else{const rows={};items.forEach(it=>{const y=Math.round(it.transform[5]);(rows[y]=rows[y]||[]).push(it)});
-text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')).join('\n')+'\n'}
+const fechaHdr=items.find(it=>/^FECHA$/i.test(it.str.trim()));
+const fincaHdr=items.find(it=>/^FINCA$/i.test(it.str.trim()));
+const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<14&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
+const fxMin=fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160);
+const fxMax=fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+130:380);
+const dayMinX=Math.min(...days.map(d=>d.vx));
+const allYs=hSegs.filter(s=>s.x1<=dayMinX+10&&s.x2>=Math.min(fxMin-5,dayMinX+25)).map(s=>s.y).sort((a,b)=>a-b);
+const cutYs=[];let last=-1e9;allYs.forEach(y=>{if(y-last>3){cutYs.push(y);last=y}});
+const boxes=days.map((dy,idx)=>{const above=cutYs.filter(y=>y<dy.vy-2),below=cutYs.filter(y=>y>dy.vy+2);
+return {d:dy.d,yTop:above.length?Math.max(...above):(idx>0?(days[idx-1].vy+dy.vy)/2:-1e9),yBottom:below.length?Math.min(...below):(idx<days.length-1?(dy.vy+days[idx+1].vy)/2:1e9),cy:dy.vy}});
+const rows={};items.forEach(it=>{if(it.vx<fxMin||it.vx>fxMax)return;const y=Math.round(it.vy/4)*4;(rows[y]=rows[y]||[]).push(it)});
+const lines=Object.keys(rows).sort((a,b)=>a-b).map(y=>({vy:+y,t:rows[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
+lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-2&&r.vy<=b.yBottom+2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
+else{text+=sortedTxt+'\n'}
 if(img){const v=p.getViewport({scale:2.5});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
 async function shrink(b){try{const bm=await createImageBitmap(b);const k=Math.min(1,2800/Math.max(bm.width,bm.height));const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(bm,0,0,c.width,c.height);return await new Promise(r=>c.toBlob(r,'image/jpeg',0.92))}catch(e){return b}}
