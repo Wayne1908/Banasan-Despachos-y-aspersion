@@ -58,9 +58,18 @@ return out}
 
 /* ---- PDF e IA ---- */
 async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';
-for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const tc=await p.getTextContent();const rows={};
-tc.items.forEach(it=>{const y=Math.round(it.transform[5]);(rows[y]=rows[y]||[]).push(it)});
-text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')).join('\n')+'\n';
+for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const tc=await p.getTextContent();const items=tc.items.filter(it=>it.str.trim());
+const full=items.map(it=>it.str).join(' ');const wm=norm(full).match(/SEMANA\s*(\d{1,2})/);if(wm)text+=`SEM ${wm[1]}\n`;
+const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*\d{1,2}\s+DE\s+[A-Z]+/i;
+const days=items.filter(it=>dayRe.test(norm(it.str.trim()))).map(it=>({d:norm(it.str.trim()).match(dayRe)[1],y:it.transform[5]})).sort((a,b)=>b.y-a.y);
+if(days.length){const rows={};items.forEach(it=>{if(it.transform[4]<120||it.transform[4]>300)return;const y=Math.round(it.transform[5]/4)*4;(rows[y]=rows[y]||[]).push(it)});
+const lines=Object.keys(rows).sort((a,b)=>b-a).map(y=>({y:+y,t:rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
+lines.forEach((r,idx)=>{let best=days[0],min=1e9;days.forEach(dy=>{const dist=Math.abs(dy.y-r.y);if(dist<min){min=dist;best=dy}});
+const prevY=idx>0?lines[idx-1].y:1e9,nextY=idx<lines.length-1?lines[idx+1].y:-1e9;
+const inRange=days.filter(dy=>dy.y<=prevY+6&&dy.y>=nextY-6);const chosen=inRange.length?inRange[0]:best;
+text+=`${chosen.d} ${r.t}\n`})}
+else{const rows={};items.forEach(it=>{const y=Math.round(it.transform[5]);(rows[y]=rows[y]||[]).push(it)});
+text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(i=>i.str).join(' ')).join('\n')+'\n'}
 if(img){const v=p.getViewport({scale:1.6});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
 async function shrink(b){try{const bm=await createImageBitmap(b);const k=Math.min(1,2000/Math.max(bm.width,bm.height));const c=document.createElement('canvas');c.width=Math.round(bm.width*k);c.height=Math.round(bm.height*k);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);x.drawImage(bm,0,0,c.width,c.height);return await new Promise(r=>c.toBlob(r,'image/jpeg',0.85))}catch(e){return b}}
