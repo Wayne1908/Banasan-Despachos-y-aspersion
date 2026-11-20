@@ -62,12 +62,23 @@ const meses={ENERO:0,FEBRERO:1,MARZO:2,ABRIL:3,MAYO:4,JUNIO:5,JULIO:6,AGOSTO:7,S
 const isoWk=(d,m,y)=>{const dt=new Date(Date.UTC(y,m,d));const day=(dt.getUTCDay()+6)%7;dt.setUTCDate(dt.getUTCDate()-day+3);const w1=new Date(Date.UTC(dt.getUTCFullYear(),0,4));return 1+Math.round(((dt-w1)/864e5-3+(w1.getUTCDay()+6)%7)/7)};
 for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const vp=p.getViewport({scale:1});const tc=await p.getTextContent();
 const items=tc.items.filter(it=>it.str.trim()).map(it=>{const [vx,vy]=vp.convertToViewportPoint(it.transform[4],it.transform[5]);return {str:it.str,vx,vy}});
+const rawStream=norm(items.map(it=>it.str).join(' '));
 const rAll={};items.forEach(it=>{const y=Math.round(it.vy/5)*5;(rAll[y]=rAll[y]||[]).push(it)});
 const sortedTxt=Object.keys(rAll).sort((a,b)=>a-b).map(y=>rAll[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')).join('\n');
-const wm=norm(sortedTxt).match(/SEMANA\s*[:\-]?\s*(\d{1,2})/);if(wm)text+=`SEM ${wm[1]}\n`;
-const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)\s+DE\s+(20\d\d)/i;
-const days=items.map(it=>({it,m:norm(it.str.trim()).match(dayRe)})).filter(x=>x.m).map(x=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],yy:+x.m[4],vx:x.it.vx,vy:x.it.vy})).sort((a,b)=>a.vy-b.vy);
-if(!wm&&days.length&&days[0].mm!==undefined)text+=`SEM ${isoWk(days[0].dd,days[0].mm,days[0].yy)}\n`;
+const yrM=(rawStream+' '+sortedTxt).match(/\b(202\d)\b/);const docYr=yrM?+yrM[1]:2026;
+let wm=rawStream.match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/)||norm(sortedTxt).match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/);
+let wkNum=wm?+wm[1]:null;
+if(!wkNum){const sh=items.find(it=>/^SEMANA$/i.test(norm(it.str.trim())));if(sh){const near=items.filter(it=>/^\d{1,2}$/.test(it.str.trim())&&+it.str>=1&&+it.str<=53&&Math.abs(it.vx-sh.vx)<140&&Math.abs(it.vy-sh.vy)<45).sort((a,b)=>Math.hypot(a.vx-sh.vx,a.vy-sh.vy)-Math.hypot(b.vx-sh.vx,b.vy-sh.vy))[0];if(near)wkNum=+near.str.trim()}}
+const fechaHdr=items.find(it=>/^FECHA$/i.test(norm(it.str.trim())));
+const fincaHdr=items.find(it=>/^FINCA$/i.test(norm(it.str.trim())));
+const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<15&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
+const fxMin=fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160);
+const fxMax=fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+145:360);
+const dRows={};items.forEach(it=>{if(it.vx<fxMin){const y=Math.round(it.vy/6)*6;(dRows[y]=dRows[y]||[]).push(it)}});
+const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)/i;
+const days=Object.keys(dRows).sort((a,b)=>a-b).map(y=>{const arr=dRows[y].sort((a,b)=>a.vx-b.vx);const txt=norm(arr.map(x=>x.str).join(' ')).replace(/\s+/g,' ').trim();return {m:txt.match(dayRe),vy:+y}}).filter(x=>x.m).map(x=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],vy:x.vy}));
+if(!wkNum&&days.length&&days[0].mm!==undefined)wkNum=isoWk(days[0].dd,days[0].mm,docYr);
+if(wkNum)text+=`SEM ${wkNum}\n`;
 if(days.length){const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[];
 const mul=(m1,m2)=>[m1[0]*m2[0]+m1[2]*m2[1],m1[1]*m2[0]+m1[3]*m2[1],m1[0]*m2[2]+m1[2]*m2[3],m1[1]*m2[2]+m1[3]*m2[3],m1[0]*m2[4]+m1[2]*m2[5]+m1[4],m1[1]*m2[4]+m1[3]*m2[5]+m1[5]];
 const pt=(x,y)=>{const px=ctm[0]*x+ctm[2]*y+ctm[4],py=ctm[1]*x+ctm[3]*y+ctm[5];return vp.convertToViewportPoint(px,py)};
@@ -78,19 +89,13 @@ if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=
 else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
 else if(fn===OPS.constructPath&&args){const subOps=Array.isArray(args[0])?args[0]:[args[0]];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
 if(rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0;for(const so of subOps){if(so===OPS.moveTo){cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}
-const fechaHdr=items.find(it=>/^FECHA$/i.test(it.str.trim()));
-const fincaHdr=items.find(it=>/^FINCA$/i.test(it.str.trim()));
-const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<14&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
-const fxMin=fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160);
-const fxMax=fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+130:380);
-const dayMinX=Math.min(...days.map(d=>d.vx));
-const allYs=hSegs.filter(s=>s.x1<=dayMinX+10&&s.x2>=Math.min(fxMin-5,dayMinX+25)).map(s=>s.y).sort((a,b)=>a-b);
+const allYs=hSegs.filter(s=>s.x1<fxMin-15&&s.x2>fxMin-5).map(s=>s.y).sort((a,b)=>a-b);
 const cutYs=[];let last=-1e9;allYs.forEach(y=>{if(y-last>3){cutYs.push(y);last=y}});
 const boxes=days.map((dy,idx)=>{const above=cutYs.filter(y=>y<dy.vy-2),below=cutYs.filter(y=>y>dy.vy+2);
 return {d:dy.d,yTop:above.length?Math.max(...above):(idx>0?(days[idx-1].vy+dy.vy)/2:-1e9),yBottom:below.length?Math.min(...below):(idx<days.length-1?(dy.vy+days[idx+1].vy)/2:1e9),cy:dy.vy}});
 const rows={};items.forEach(it=>{if(it.vx<fxMin||it.vx>fxMax)return;const y=Math.round(it.vy/4)*4;(rows[y]=rows[y]||[]).push(it)});
 const lines=Object.keys(rows).sort((a,b)=>a-b).map(y=>({vy:+y,t:rows[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
-lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-2&&r.vy<=b.yBottom+2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
+lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-3&&r.vy<=b.yBottom+3)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
 else{text+=sortedTxt+'\n'}
 if(img){const v=p.getViewport({scale:2.5});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
