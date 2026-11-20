@@ -46,8 +46,7 @@ const Ic=(n,s=18,c='')=>html`<svg width=${s} height=${s} viewBox="0 0 24 24" fil
 /* ---- reconocimiento de fincas ---- */
 const CN={};ALL.forEach(f=>CN[norm(f)]=f);
 const PAT=[...Object.keys(CN).map(k=>[k,CN[k]]),['LA CEIBA','CEIBA'],['MERCEDES','LAS MERCEDES'],['JOSEFINA MARIA TERESA','JOSEFINA MT'],['JOSEFINA M T','JOSEFINA MT'],['MARIA TERESA','JOSEFINA MT'],['JOSEFINA','JOSEFINA MT'],['GISELLE','GISELLE BEATRIZ'],['LOS ANGELES','ANGELES'],['NARANJITO','NARANJITOS'],['MARTES','MARTE']].sort((a,b)=>b[0].length-a[0].length);
-const findF=(t,mt)=>{let s=' '+norm(t).replace(/[._]/g,' ').replace(/\s+/g,' ')+' ';s=s.replace(/(?<![A-Z])GLORIA\s+MERCEDES(?![A-Z])/g,' ');const r=[];for(const [k,f] of PAT){if(k==='MARTES'&&!mt)continue;const re=new RegExp('(?<![A-Z])'+k+'(?![A-Z])','g');if(re.test(s)){s=s.replace(re,' ');if(!r.includes(f))r.push(f)}}return r};
-function parseAsp(t){const out=[];let wk=null,dy=null;
+const findF=(t,mt)=>{let s=' '+norm(t).replace(/[._]/g,' ').replace(/\s+/g,' ')+' ';s=s.replace(/(?<![A-Z])GLORIA\s+MERCEDES(?![A-Z])/g,' ').replace(/(?<![A-Z])(?!LA\s+)[A-Z0-9]+\s+CEIBA(?![A-Z])/g,' ');const r=[];for(const [k,f] of PAT){if(k==='MARTES'&&!mt)continue;const re=new RegExp('(?<![A-Z])'+k+'(?![A-Z])','g');if(re.test(s)){s=s.replace(re,' ');if(!r.includes(f))r.push(f)}}return r};
 for(const raw of t.split(/\r?\n/)){const line=norm(raw).replace(/(MERCEDES)\s*-?\s*[A-D](?:\s*[,/&-]\s*[A-D](?![A-Z]))*(?![A-Z])/g,'$1');if(!line.trim())continue;
 const m=line.match(/SEM(?:ANA)?\s*\.?\s*(\d{1,2})(?!\d)/);if(m){wk=+m[1];dy=null}
 const cells=line.split(/[,;\t|]/);
