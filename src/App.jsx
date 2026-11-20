@@ -60,42 +60,54 @@ return out}
 async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';const OPS=pdfjsLib.OPS;
 const meses={ENERO:0,FEBRERO:1,MARZO:2,ABRIL:3,MAYO:4,JUNIO:5,JULIO:6,AGOSTO:7,SEPTIEMBRE:8,OCTUBRE:9,NOVIEMBRE:10,DICIEMBRE:11};
 const isoWk=(d,m,y)=>{const dt=new Date(Date.UTC(y,m,d));const day=(dt.getUTCDay()+6)%7;dt.setUTCDate(dt.getUTCDate()-day+3);const w1=new Date(Date.UTC(dt.getUTCFullYear(),0,4));return 1+Math.round(((dt-w1)/864e5-3+(w1.getUTCDay()+6)%7)/7)};
+const clusterY=(arr,tol)=>{const s=[...arr].sort((a,b)=>a.vy-b.vy);const out=[];for(const it of s){const g=out[out.length-1];if(g&&it.vy-g.yLast<=tol){g.items.push(it);g.yLast=it.vy}else out.push({y0:it.vy,yLast:it.vy,items:[it]})}return out};
 for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const vp=p.getViewport({scale:1});const tc=await p.getTextContent();
 const items=tc.items.filter(it=>it.str.trim()).map(it=>{const [vx,vy]=vp.convertToViewportPoint(it.transform[4],it.transform[5]);return {str:it.str,vx,vy}});
 const rawStream=norm(items.map(it=>it.str).join(' '));
-const rAll={};items.forEach(it=>{const y=Math.round(it.vy/5)*5;(rAll[y]=rAll[y]||[]).push(it)});
-const sortedTxt=Object.keys(rAll).sort((a,b)=>a-b).map(y=>rAll[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')).join('\n');
-const yrM=(rawStream+' '+sortedTxt).match(/\b(202\d)\b/);const docYr=yrM?+yrM[1]:2026;
-let wm=rawStream.match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/)||norm(sortedTxt).match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/);
-let wkNum=wm?+wm[1]:null;
-if(!wkNum){const sh=items.find(it=>/^SEMANA$/i.test(norm(it.str.trim())));if(sh){const near=items.filter(it=>/^\d{1,2}$/.test(it.str.trim())&&+it.str>=1&&+it.str<=53&&Math.abs(it.vx-sh.vx)<140&&Math.abs(it.vy-sh.vy)<45).sort((a,b)=>Math.hypot(a.vx-sh.vx,a.vy-sh.vy)-Math.hypot(b.vx-sh.vx,b.vy-sh.vy))[0];if(near)wkNum=+near.str.trim()}}
-const fechaHdr=items.find(it=>/^FECHA$/i.test(norm(it.str.trim())));
-const fincaHdr=items.find(it=>/^FINCA$/i.test(norm(it.str.trim())));
-const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<15&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
-const fxMin=fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160);
-const fxMax=fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+145:360);
-const dRows={};items.forEach(it=>{if(it.vx<fxMin){const y=Math.round(it.vy/6)*6;(dRows[y]=dRows[y]||[]).push(it)}});
-const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)/i;
-const days=Object.keys(dRows).sort((a,b)=>a-b).map(y=>{const arr=dRows[y].sort((a,b)=>a.vx-b.vx);const txt=norm(arr.map(x=>x.str).join(' ')).replace(/\s+/g,' ').trim();return {m:txt.match(dayRe),vy:+y}}).filter(x=>x.m).map(x=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],vy:x.vy}));
-if(!wkNum&&days.length&&days[0].mm!==undefined)wkNum=isoWk(days[0].dd,days[0].mm,docYr);
-if(wkNum)text+=`SEM ${wkNum}\n`;
-if(days.length){const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[];
+const sortedTxt=clusterY(items,5).map(g=>g.items.sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')).join('\n');
+const cleanNoVig=(rawStream+' '+sortedTxt).replace(/VIGENCIA[\s:]*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*20\d\d/g,' ').replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*20\d\d\b/g,' ');
+const anoHdr=items.find(it=>/^ANO$/.test(norm(it.str.trim())));
+const anoVal=anoHdr&&items.filter(it=>/^202\d$/.test(it.str.trim())&&Math.abs(it.vx-anoHdr.vx)<80&&Math.abs(it.vy-anoHdr.vy)<45).sort((a,b)=>Math.hypot(a.vx-anoHdr.vx,a.vy-anoHdr.vy)-Math.hypot(b.vx-anoHdr.vx,b.vy-anoHdr.vy))[0];
+const yrM=anoVal?[null,anoVal.str.trim()]:(cleanNoVig.match(/(?:ANO|DE)\s*(202\d)\b/)||cleanNoVig.match(/\b(202[4-9])\b/));
+const docYr=yrM?+yrM[1]:2026;
+const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[],vSegs=[];
 const mul=(m1,m2)=>[m1[0]*m2[0]+m1[2]*m2[1],m1[1]*m2[0]+m1[3]*m2[1],m1[0]*m2[2]+m1[2]*m2[3],m1[1]*m2[2]+m1[3]*m2[3],m1[0]*m2[4]+m1[2]*m2[5]+m1[4],m1[1]*m2[4]+m1[3]*m2[5]+m1[5]];
 const pt=(x,y)=>{const px=ctm[0]*x+ctm[2]*y+ctm[4],py=ctm[1]*x+ctm[3]*y+ctm[5];return vp.convertToViewportPoint(px,py)};
-const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);if(Math.abs(ay-by)<3&&Math.abs(bx-ax)>25)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2})};
-const addRect=(x,y,w,h)=>{addSeg(x,y,x+w,y);addSeg(x,y+h,x+w,y+h)};
+const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);
+if(Math.abs(ay-by)<3&&Math.abs(bx-ax)>20)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2});
+else if(Math.abs(ax-bx)<3&&Math.abs(by-ay)>35)vSegs.push({x:(ax+bx)/2,y1:Math.min(ay,by),y2:Math.max(ay,by)})};
+const addRect=(x,y,w,h)=>{addSeg(x,y,x+w,y);addSeg(x,y+h,x+w,y+h);addSeg(x,y,x,y+h);addSeg(x+w,y,x+w,y+h)};
 for(let k=0;k<opList.fnArray.length;k++){const fn=opList.fnArray[k],args=opList.argsArray[k];
 if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=stk.pop()}else if(fn===OPS.transform)ctm=mul(ctm,args);
 else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
-else if(fn===OPS.constructPath&&args){const subOps=Array.isArray(args[0])?args[0]:[args[0]];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
-if(rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0;for(const so of subOps){if(so===OPS.moveTo){cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}
-const allYs=hSegs.filter(s=>s.x1<fxMin-15&&s.x2>fxMin-5).map(s=>s.y).sort((a,b)=>a-b);
+else if(fn===OPS.constructPath&&args){
+if(typeof args[0]==='number'){const buf=Array.isArray(args[1])?args[1][0]:args[1];if(buf&&typeof buf.length==='number'){let ci=0,cx=0,cy=0,sx=0,sy=0;while(ci<buf.length){const op=buf[ci++];if(op===0){cx=sx=buf[ci++];cy=sy=buf[ci++]}else if(op===1){const nx=buf[ci++],ny=buf[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(op===2){ci+=4;cx=buf[ci++];cy=buf[ci++]}else if(op===3){ci+=2;cx=buf[ci++];cy=buf[ci++]}else if(op===4){addSeg(cx,cy,sx,sy);cx=sx;cy=sy}else break}}}
+else{const subOps=args[0];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
+if(subOps&&rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0,sx=0,sy=0;for(const so of subOps){if(so===OPS.moveTo){cx=sx=rawC[ci++];cy=sy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.closePath){addSeg(cx,cy,sx,sy);cx=sx;cy=sy}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}}
+const fechaHdr=items.find(it=>/^FECHA$/i.test(norm(it.str.trim())));
+const fincaHdr=items.find(it=>/^FINCA$/i.test(norm(it.str.trim())));
+const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<15&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
+const vLeft=fechaHdr&&fincaHdr&&vSegs.filter(v=>v.x>fechaHdr.vx&&v.x<fincaHdr.vx).sort((a,b)=>(b.y2-b.y1)-(a.y2-a.y1))[0];
+const vRight=fincaHdr&&nextHdr&&vSegs.filter(v=>v.x>fincaHdr.vx&&v.x<nextHdr.vx).sort((a,b)=>(b.y2-b.y1)-(a.y2-a.y1))[0];
+const fxMin=vLeft?vLeft.x-2:(fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160));
+const fxMax=vRight?vRight.x+2:(fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+145:360));
+const allYs=hSegs.filter(s=>s.x1<=fxMin-25&&s.x2>=fxMin-5).map(s=>s.y).sort((a,b)=>a-b);
 const cutYs=[];let last=-1e9;allYs.forEach(y=>{if(y-last>3){cutYs.push(y);last=y}});
-const boxes=days.map((dy,idx)=>{const above=cutYs.filter(y=>y<dy.vy-2),below=cutYs.filter(y=>y>dy.vy+2);
-return {d:dy.d,yTop:above.length?Math.max(...above):(idx>0?(days[idx-1].vy+dy.vy)/2:-1e9),yBottom:below.length?Math.min(...below):(idx<days.length-1?(dy.vy+days[idx+1].vy)/2:1e9),cy:dy.vy}});
-const rows={};items.forEach(it=>{if(it.vx<fxMin||it.vx>fxMax)return;const y=Math.round(it.vy/4)*4;(rows[y]=rows[y]||[]).push(it)});
-const lines=Object.keys(rows).sort((a,b)=>a-b).map(y=>({vy:+y,t:rows[y].sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
-lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-3&&r.vy<=b.yBottom+3)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
+const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)(?:\s+DE\s+(202\d))?/i;
+const leftItems=items.filter(it=>it.vx<fxMin);
+let boxes=[];
+if(cutYs.length>=2){for(let j=0;j<cutYs.length-1;j++){const yTop=cutYs[j],yBottom=cutYs[j+1];
+const cellItems=leftItems.filter(it=>it.vy>=yTop-2&&it.vy<=yBottom+2).sort((a,b)=>Math.abs(a.vy-b.vy)<5?a.vx-b.vx:a.vy-b.vy);
+const txt=norm(cellItems.map(x=>x.str).join(' ')).replace(/\s*,\s*/g,', ').replace(/\s+/g,' ').trim();
+const m=txt.match(dayRe);if(m)boxes.push({d:m[1],dd:+m[2],mm:meses[m[3]],yy:m[4]?+m[4]:docYr,yTop,yBottom,cy:(yTop+yBottom)/2})}}
+if(!boxes.length){const days=clusterY(leftItems,16).map(g=>{const arr=g.items.sort((a,b)=>Math.abs(a.vy-b.vy)<5?a.vx-b.vx:a.vy-b.vy);
+const txt=norm(arr.map(x=>x.str).join(' ')).replace(/\s*,\s*/g,', ').replace(/\s+/g,' ').trim();return {m:txt.match(dayRe),vy:(g.y0+g.yLast)/2}}).filter(x=>x.m);
+boxes=days.map((x,idx)=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],yy:x.m[4]?+x.m[4]:docYr,yTop:idx>0?(days[idx-1].vy+x.vy)/2:-1e9,yBottom:idx<days.length-1?(x.vy+days[idx+1].vy)/2:1e9,cy:x.vy}))}
+let wkNum=(boxes.length&&boxes[0].mm!==undefined)?isoWk(boxes[0].dd,boxes[0].mm,boxes[0].yy):null;
+if(!wkNum){const wm=cleanNoVig.match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/);if(wm)wkNum=+wm[1]}
+if(wkNum)text+=`SEM ${wkNum}\n`;
+if(boxes.length){const lines=clusterY(items.filter(it=>it.vx>=fxMin&&it.vx<=fxMax),4).map(g=>({vy:(g.y0+g.yLast)/2,t:g.items.sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
+lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-2&&r.vy<=b.yBottom+2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
 else{text+=sortedTxt+'\n'}
 if(img){const v=p.getViewport({scale:2.5});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
@@ -175,7 +187,9 @@ return out};
 if(isImg(f)){res=await fromAI();via='lectura con IA'}
 else if(isPdf(f)){res=await fromAI();via='lectura con IA';if(!res.length){res=parseAsp(text);via='texto del PDF'}}
 else{res=parseAsp(text);via='texto';if(!res.length){res=await fromAI();via='IA'}}
-if(!res.length){upd(setAspF,id,{st:'err',note:'No se detectaron semana/día/finca. Si es imagen o PDF escaneado, revisa que ANTHROPIC_API_KEY esté configurada en Vercel.'});continue}
+if(!res.length){
+if(/SEM\s*\d{1,2}/.test(text)){upd(setAspF,id,{st:'ok',note:'0 fincas de Banasan en este archivo (solo otras comercializadoras/fincas)'});continue}
+upd(setAspF,id,{st:'err',note:'No se detectaron semana/día/finca. Si es imagen o PDF escaneado, revisa que ANTHROPIC_API_KEY esté configurada en Vercel.'});continue}
 setRestr(r=>{const n={...r};res.forEach(([w,d,fi])=>{const k=w+'|'+d,a=n[k]||[];if(!a.includes(fi))n[k]=[...a,fi]});return n});
 upd(setAspF,id,{st:'ok',note:`${res.length} fincas-día extraídas (${via}${imgs.length>1?', '+imgs.length+' págs':''})`+(fail?` · ${fail} lote(s) de páginas no se pudieron leer: vuelve a subir el archivo`:'')+(unk.length?' · Nombres no reconocidos (omitidos): '+[...new Set(unk)].join(', '):'')})}
 catch(e){upd(setAspF,id,{st:'err',note:'Error: '+(e.message||e)})}}};
@@ -279,7 +293,7 @@ ${ap&&edP===null&&!delP&&html`<span class="flex gap-1"><button title="Editar nom
 ${edP!==null&&html`<span class="flex gap-1"><input autoFocus value=${edP} onChange=${e=>setEdP(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&renProv()} class=${sel}/><button onClick=${renProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar nombre</button><button onClick=${()=>setEdP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}
 ${delP&&html`<span class="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded px-2 py-1">¿Eliminar <b>${ap}</b> y todos sus despachos?<button onClick=${delProv} class="px-2 py-0.5 rounded bg-red-600 text-white font-bold">Sí, eliminar</button><button onClick=${()=>setDelP(false)} class="px-2 text-slate-600">Cancelar</button></span>`}
 ${newP===null?html`<button onClick=${()=>setNewP('')} class="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold border-2 border-dashed" style=${{color:BLUE,borderColor:BLUE}}>${Ic('plus',14)} Nuevo Proveedor</button>`
-:html`<span class="flex gap-1"><input autofocus placeholder="Nombre del proveedor" value=${newP} onChange=${e=>setNewP(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&addProv()} class=${sel}/><button onClick=${addProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar</button><button onClick=${()=>setNewP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}</div>
+:html`<span class="flex gap-1"><input autofocus placeholder="Nombre del proveedor" value=${newP} onChange=${e=>setNewP(e.target.value)} onKeyDown=${e.key==='Enter'&&addProv()} class=${sel}/><button onClick=${addProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar</button><button onClick=${()=>setNewP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}</div>
 ${!weeks.length?html`<div class="p-6 text-center text-slate-500">Primero carga el calendario (pestaña 1).</div>`:html`
 <div class="bg-white border rounded-lg p-3 mb-3"><div class="grid grid-cols-2 md:grid-cols-6 gap-2 items-end text-sm">
 <label class="md:col-span-2 font-bold">Semana<select class=${sel+' w-full font-normal'} value=${form.w} onChange=${e=>setF('w',e.target.value)}>${weeks.map(w=>html`<option key=${w.n} value=${w.n}>${wl(w)}</option>`)}</select></label>
