@@ -11,14 +11,16 @@ export default async function handler(req, res) {
     });
 
     const targets = [
-      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
+      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`
+      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`
     ];
 
-    let lastErr = '';
+    const errs = [];
     for (const url of targets) {
+      const modelName = url.split('/models/')[1].split(':')[0];
+      const host = url.includes('aiplatform') ? 'aiplatform' : 'generativelanguage';
       const r = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -28,9 +30,10 @@ export default async function handler(req, res) {
         const okRes = await r.json();
         return okRes.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
       }
-      lastErr = `(${r.status}) ` + await r.text();
+      const errBody = await r.text();
+      errs.push(`[${host}/${modelName} -> ${r.status}] ${errBody}`);
     }
-    throw new Error(lastErr);
+    throw new Error(errs.join(' | '));
   }
 
   if (req.method === 'GET') {
