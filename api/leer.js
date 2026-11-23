@@ -2,6 +2,8 @@ export default async function handler(req, res) {
   const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
   const anthropicKey = (process.env.ANTHROPIC_API_KEY || '').trim();
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
   async function tryModel(modelPath, parts, useJson) {
     const genCfg = { temperature: 0 };
     if (useJson) genCfg.responseMimeType = 'application/json';
@@ -19,7 +21,9 @@ export default async function handler(req, res) {
 
     if (!r.ok) {
       const txt = await r.text();
-      throw new Error(`[${cleanPath} -> ${r.status}] ${txt}`);
+      const err = new Error(`[${cleanPath} -> ${r.status}] ${txt}`);
+      err.status = r.status;
+      throw err;
     }
 
     const okRes = await r.json();
@@ -30,48 +34,32 @@ export default async function handler(req, res) {
 
   async function callGemini(parts, useJson = true) {
     const errs = [];
-    const initialModels = ['models/gemini-3.8-flash'];
+    const models = [
+      'models/gemini-3.8-flash',
+      'models/gemini-flash-latest',
+      'models/gemini-flash-lite-latest',
+      'models/gemini-3.8-pro',
+      'models/gemini-3-flash-preview'
+    ];
 
-    for (const m of initialModels) {
-      try {
-        return await tryModel(m, parts, useJson);
-      } catch (e) {
-        errs.push(e.message);
+    for (let round = 0; round < 2; round++) {
+      let saw503 = false;
+      for (const m of models) {
+        try {
+          return await tryModel(m, parts, useJson);
+        } catch (e) {
+          if (e.status === 503) saw503 = true;
+          errs.push(e.message);
+        }
+      }
+      if (saw503 && round === 0) {
+        await sleep(2000);
+      } else {
+        break;
       }
     }
 
-    const listRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`
-    );
-    if (!listRes.ok) {
-      throw new Error(errs.join(' | ') + ' | ListModels: ' + (await listRes.text()));
-    }
-
-    const listData = await listRes.json();
-    const candidates = (listData.models || [])
-      .filter(
-        (m) =>
-          (m.supportedGenerationMethods || []).includes('generateContent') &&
-          /gemini/i.test(m.name) &&
-          !/embedding|aqa|imagen|veo|tts|audio|robotics|computer-use/i.test(m.name) &&
-          !initialModels.includes(m.name)
-      )
-      .sort((a, b) => {
-        const af = /flash/i.test(a.name) ? 1 : 0;
-        const bf = /flash/i.test(b.name) ? 1 : 0;
-        if (af !== bf) return bf - af;
-        return b.name.localeCompare(a.name);
-      });
-
-    for (const m of candidates.slice(0, 4)) {
-      try {
-        return await tryModel(m.name, parts, useJson);
-      } catch (e) {
-        errs.push(e.message);
-      }
-    }
-
-    throw new Error(errs.join(' | '));
+    throw new Error(errs.slice(0, 5).join(' | '));
   }
 
   if (req.method === 'GET') {
