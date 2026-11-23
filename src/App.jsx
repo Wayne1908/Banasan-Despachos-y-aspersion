@@ -8,7 +8,7 @@ import {createClient} from '@supabase/supabase-js';
 pdfjsLib.GlobalWorkerOptions.workerSrc=pdfWorker;
 const html=htm.bind(React.createElement);
 
-/* ---- Supabase (puedes sobreescribir con VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY) ---- */
+/* ---- Supabase ---- */
 const SB_URL=import.meta.env.VITE_SUPABASE_URL||'https://ywykyfatumkfjwyembqr.supabase.co';
 const SB_KEY=import.meta.env.VITE_SUPABASE_ANON_KEY||'sb_publishable_TYpKSrMMdqwh05g7j67VPw_SLRLqeqc';
 const sb=createClient(SB_URL,SB_KEY);
@@ -78,7 +78,10 @@ const b64=b=>new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(String(fr
 
 async function ai(prompt,images){try{const imgs=[];for(const b of images||[]){const s=await shrink(b);imgs.push({type:s.type||'image/jpeg',data:await b64(s)})}
 const r=await fetch('/api/leer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,images:imgs})});
-if(!r.ok)return null;return (await r.json()).data}catch(e){return null}}
+const txt=await r.text();let j=null;try{j=JSON.parse(txt)}catch(e){}
+if(!r.ok)return {__err:(j&&j.error)||`HTTP ${r.status}: ${txt.slice(0,180)}`};
+if(!j||j.data===undefined)return {__err:'Respuesta inesperada del servidor (/api/leer)'};
+return j.data}catch(e){return {__err:e.message||'Error de red'}}}
 
 const isImg=f=>/\.(jpe?g|png|webp)$/i.test(f.name)||f.type.startsWith('image/');
 const isPdf=f=>/\.pdf$/i.test(f.name);
@@ -100,7 +103,7 @@ Reglas estrictas:
 /* ---- componentes ---- */
 function FL({files}){return html`<ul class="mt-3 space-y-1.5">${files.map(f=>html`<li key=${f.id} class="flex items-start gap-2 text-sm bg-slate-50 border rounded px-2 py-1.5">
 <span class=${f.st==='ok'?'text-emerald-600':f.st==='err'?'text-red-600':'text-blue-600'}>${Ic(f.st==='ok'?'ok':f.st==='err'?'warn':'load',18,f.st==='proc'?'spin':'')}</span>
-<span class="min-w-0"><b class="break-all">${f.name}</b><br/><span class="text-xs text-slate-500">${f.note}</span></span></li>`)}</ul>`}
+<span class="min-w-0"><b class="break-all">${f.name}</b><br/><span class="text-xs text-slate-500 break-words">${f.note}</span></span></li>`)}</ul>`}
 function Drop({title,sub,onFiles,files,children}){const [o,setO]=useState(false);const r=useRef();
 return html`<div class="bg-white rounded-xl shadow border border-slate-200 p-5">
 <h3 class="font-bold text-lg" style=${{color:BLUE}}>${title}</h3><p class="text-sm text-slate-500 mb-3">${sub}</p>
@@ -147,7 +150,7 @@ const doCal=async fs=>{for(const f of fs){const id=Math.random();setCalF(a=>[...
 try{let text='',imgs=[];if(isImg(f))imgs=[f];else if(isPdf(f)){const r=await pdfInfo(f,2,true);text=r.text;imgs=r.blobs}else text=await f.text();
 const y=+((text+' '+f.name).match(/20\d\d/)||[2026])[0];let start=null,via=`regla ISO del año ${y} (SEM 1 = semana del 1 de enero)`;
 const j=await ai(`Este archivo es el Calendario Bananero (SEM 1 a SEM 52, semanas de lunes a domingo). Responde SOLO un JSON {"week1Start":"YYYY-MM-DD"} con el lunes en que inicia la SEM 1; verifícalo contando semanas desde una fecha visible.${text?'\n\nTexto:\n'+text.slice(0,6000):''}`,imgs);
-if(j&&j.week1Start){const d=new Date(j.week1Start+'T00:00:00Z');if(!isNaN(d)&&d.getUTCDay()===1){start=d;via='leído con IA'}}
+if(j&&!j.__err&&j.week1Start){const d=new Date(j.week1Start+'T00:00:00Z');if(!isNaN(d)&&d.getUTCDay()===1){start=d;via='leído con IA'}}
 if(!start)start=isoW1(y);afterW(mkWeeks(start));
 upd(setCalF,id,{st:'ok',note:`SEM 1–52 habilitadas (${via}). SEM 1: ${fR(start)}`})}
 catch(e){upd(setCalF,id,{st:'err',note:'No se pudo leer: '+(e.message||e)})}}};
@@ -155,12 +158,12 @@ catch(e){upd(setCalF,id,{st:'err',note:'No se pudo leer: '+(e.message||e)})}}};
 const doAsp=async fs=>{for(const f of fs){const id=Math.random();setAspF(a=>[...a,{id,name:f.name,st:'proc',note:'Leyendo…'}]);
 try{let text='',imgs=[],res=[],via='';
 if(isImg(f))imgs=[f];else if(isPdf(f)){const r=await pdfInfo(f,40,true);text=r.text;imgs=r.blobs}else text=await f.text();
-let fail=0,totalRows=0;
+let fail=0,totalRows=0,lastAiErr='';
 const fromAI=async()=>{const out=[],tx=isImg(f)||isPdf(f)?'':text;
 for(let i=0;i<Math.max(imgs.length,1);i++){
   if(imgs.length>1)upd(setAspF,id,{note:`Analizando página ${i+1} de ${imgs.length} con IA…`});
   const j=await ai(aspPrompt(tx),imgs.slice(i,i+1));
-  if(!Array.isArray(j)){fail++;continue}
+  if(!Array.isArray(j)){fail++;if(j&&j.__err)lastAiErr=j.__err;continue}
   totalRows+=j.length;
   j.forEach(x=>{
     let w=+x.week,d=D.indexOf(norm(x.day||''));
@@ -179,7 +182,7 @@ if(!res.length){
   if((isImg(f)||isPdf(f))&&fail===0&&totalRows>0){
     upd(setAspF,id,{st:'ok',note:'0 fincas de Banasan en este archivo (solo cooperativas o terceros)'});continue;
   }
-  upd(setAspF,id,{st:'err',note:'No se pudo conectar con la IA (/api/leer). Revisa que exista api/leer.js en la raíz del repo y la variable GEMINI_API_KEY en Vercel.'});continue;
+  upd(setAspF,id,{st:'err',note:lastAiErr?`Error IA: ${lastAiErr}`:'No se pudo conectar con la IA (/api/leer). Revisa que exista api/leer.js en la raíz del repo y la variable GEMINI_API_KEY en Vercel.'});continue;
 }
 setRestr(r=>{const n={...r};res.forEach(([w,d,fi])=>{const k=w+'|'+d,a=n[k]||[];if(!a.includes(fi))n[k]=[...a,fi]});return n});
 upd(setAspF,id,{st:'ok',note:`${res.length} fincas-día de Banasan cargadas (${via}${imgs.length>1?', '+imgs.length+' págs':''})`+(fail?` · ${fail} pág(s) con error de red`:'')})}
