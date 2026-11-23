@@ -44,6 +44,16 @@ warn:'<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0
 trash:'<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>'};
 const Ic=(n,s=18,c='')=>html`<svg width=${s} height=${s} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" class=${c} dangerouslySetInnerHTML=${{__html:IC[n]}}/>`;
 
+/* ---- Escudo visual contra errores inesperados ---- */
+class EB extends React.Component{
+  constructor(p){super(p);this.state={err:null}}
+  static getDerivedStateFromError(e){return{err:e}}
+  render(){
+    if(this.state.err)return html`<div class="p-6 m-4 bg-red-50 border border-red-300 rounded-xl text-red-800 text-sm"><b>Se produjo un error en pantalla:</b> ${String(this.state.err.message||this.state.err)} <button class="ml-3 px-3 py-1 rounded bg-red-600 text-white font-bold" onClick=${()=>this.setState({err:null})}>Restaurar vista</button></div>`;
+    return this.props.children;
+  }
+}
+
 /* ---- Filtro estricto de las 18 fincas oficiales de Banasan ---- */
 const CN={};ALL.forEach(f=>CN[norm(f)]=f);
 const PAT=[...Object.keys(CN).map(k=>[k,CN[k]]),['LA CEIBA','CEIBA'],['VIJAGUAL BUFFER','VIJAGUAL'],['MERCEDES','LAS MERCEDES'],['JOSEFINA MARIA TERESA','JOSEFINA MT'],['JOSEFINA M T','JOSEFINA MT'],['MARIA TERESA','JOSEFINA MT'],['JOSEFINA','JOSEFINA MT'],['GISELLE','GISELLE BEATRIZ'],['LOS ANGELES','ANGELES'],['NARANJITO','NARANJITOS'],['MARTES','MARTE']].sort((a,b)=>b[0].length-a[0].length);
@@ -79,14 +89,14 @@ const b64=b=>new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(String(fr
 async function ai(prompt,images){try{const imgs=[];for(const b of images||[]){const s=await shrink(b);imgs.push({type:s.type||'image/jpeg',data:await b64(s)})}
 const r=await fetch('/api/leer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,images:imgs})});
 const txt=await r.text();let j=null;try{j=JSON.parse(txt)}catch(e){}
-if(!r.ok)return {__err:(j&&j.error)||`HTTP ${r.status}: ${txt.slice(0,180)}`};
-if(!j||j.data===undefined)return {__err:'Respuesta inesperada del servidor (/api/leer)'};
+if(!r.ok)return {__err:(j&&j.error)||`HTTP ${r.status}`};
+if(!j||j.data===undefined)return {__err:'Respuesta inesperada del servidor'};
 return j.data}catch(e){return {__err:e.message||'Error de red'}}}
 
 const isImg=f=>/\.(jpe?g|png|webp)$/i.test(f.name)||f.type.startsWith('image/');
 const isPdf=f=>/\.pdf$/i.test(f.name);
 
-const aspPrompt=t=>`Analiza con máxima precisión visual esta imagen de un Programa de Aspersión Semanal de fincas bananeras.
+const aspPrompt=t=>`Analiza con máxima precisión visual estas imágenes de un Programa de Aspersión Semanal de fincas bananeras.
 Puede venir en dos formatos:
 1) Reporte por empresa fumigadora (columnas FECHA a la izquierda con celdas combinadas verticalmente, y FINCA a la derecha). Mira con cuidado las líneas horizontales de los bordes de cada celda combinada en la columna FECHA para saber exactamente qué fecha corresponde a cada fila de FINCA.
 2) Matriz semanal (columnas SEMANAS, LUNES, MARTES, MIERCOLES, JUEVES, VIERNES, SABADO, DOMINGO).
@@ -98,7 +108,7 @@ Reglas estrictas:
 - Si la fila tiene una fecha visible (ej: "viernes, 6 de noviembre de 2026"), pon "date":"2026-11-06" (ignora la fecha de "Vigencia" del pie/encabezado del formato). Si no hay fecha visible, pon "date":null.
 - En "day" escribe el día en mayúsculas sin tildes: LUNES, MARTES, MIERCOLES, JUEVES, VIERNES, SABADO o DOMINGO.
 - En "farm" copia TEXTUALMENTE el nombre de la celda FINCA sin recortarlo ni abreviarlo (por ejemplo, si dice "EMPREBANCOOP CEIBA" o "COOMULBANANO VIJAGUAL", escríbelo completo; si dice "LAS MERCEDES A", escríbelo completo).
-- No omitas ninguna fila de la tabla ni inventes datos.${t?'\n\nTexto auxiliar:\n'+t.slice(0,4000):''}`;
+- No omitas ninguna fila de ninguna página ni inventes datos.${t?'\n\nTexto auxiliar:\n'+t.slice(0,4000):''}`;
 
 /* ---- componentes ---- */
 function FL({files}){return html`<ul class="mt-3 space-y-1.5">${files.map(f=>html`<li key=${f.id} class="flex items-start gap-2 text-sm bg-slate-50 border rounded px-2 py-1.5">
@@ -125,12 +135,12 @@ const setF=(k,v)=>setForm(f=>({...f,[k]:v}));
 /* ---- Sincronización con Supabase ---- */
 const [cloud,setCloud]=useState('cargando'),[st,setSt]=useState('cargando'),[tick,setTick]=useState(0);
 const just=useRef(false),ready=useRef(false),lastJ=useRef(''),dirty=useRef(false);
-const snap=()=>({v:1,cal:weeks.length?weeks[0].start.toISOString():null,restr,provs,ap,desp,conf});
+const snap=()=>({v:1,cal:weeks.length?weeks[0].start.toISOString():null,restr,provs:Array.isArray(provs)?provs:[],ap,desp,conf});
 const load=async first=>{try{const {data,error}=await sb.from('estado_banasan').select('datos').eq('id','principal').maybeSingle();
 if(error)throw error;
 if(data&&data.datos){const d=data.datos;just.current=true;
 if(d.cal){const ws=mkWeeks(new Date(d.cal));first?afterW(ws):setWeeks(ws)}else setWeeks([]);
-setRestr({...(d.restr||{})});setProvs([...(d.provs||[])]);setAp(d.ap||'');setDesp({...(d.desp||{})});setConf(d.conf||0)}
+setRestr({...(d.restr||{})});setProvs(Array.isArray(d.provs)?[...d.provs]:[]);setAp(d.ap||'');setDesp({...(d.desp||{})});setConf(d.conf||0)}
 else just.current=!ready.current;
 ready.current=true;setCloud('listo');setSt('guardado')}
 catch(e){if(!ready.current){setCloud('error');setSt('error');setToast('No se pudo leer la nube: '+(e.message||e))}}};
@@ -153,16 +163,16 @@ const j=await ai(`Este archivo es el Calendario Bananero (SEM 1 a SEM 52, semana
 if(j&&!j.__err&&j.week1Start){const d=new Date(j.week1Start+'T00:00:00Z');if(!isNaN(d)&&d.getUTCDay()===1){start=d;via='leído con IA'}}
 if(!start)start=isoW1(y);afterW(mkWeeks(start));
 upd(setCalF,id,{st:'ok',note:`SEM 1–52 habilitadas (${via}). SEM 1: ${fR(start)}`})}
-catch(e){upd(setCalF,id,{st:'err',note:'No se pudo leer: '+(e.message||e)})}}};
+catch(e){upd(setCalF,id,{st:'err',note:'No se pudo leer el calendario.'})}}};
 
 const doAsp=async fs=>{for(const f of fs){const id=Math.random();setAspF(a=>[...a,{id,name:f.name,st:'proc',note:'Leyendo…'}]);
 try{let text='',imgs=[],res=[],via='';
 if(isImg(f))imgs=[f];else if(isPdf(f)){const r=await pdfInfo(f,40,true);text=r.text;imgs=r.blobs}else text=await f.text();
 let fail=0,totalRows=0,lastAiErr='';
 const fromAI=async()=>{const out=[],tx=isImg(f)||isPdf(f)?'':text;
-for(let i=0;i<Math.max(imgs.length,1);i++){
-  if(imgs.length>1)upd(setAspF,id,{note:`Analizando página ${i+1} de ${imgs.length} con IA…`});
-  const j=await ai(aspPrompt(tx),imgs.slice(i,i+1));
+for(let i=0;i<Math.max(imgs.length,1);i+=3){
+  if(imgs.length>3)upd(setAspF,id,{note:`Analizando páginas ${i+1}–${Math.min(i+3,imgs.length)} de ${imgs.length} con IA…`});
+  const j=await ai(aspPrompt(tx),imgs.slice(i,i+3));
   if(!Array.isArray(j)){fail++;if(j&&j.__err)lastAiErr=j.__err;continue}
   totalRows+=j.length;
   j.forEach(x=>{
@@ -175,24 +185,30 @@ for(let i=0;i<Math.max(imgs.length,1);i++){
 }
 return out};
 
-if(isImg(f)||isPdf(f)){res=await fromAI();via='visión IA'}
+if(isImg(f)){res=await fromAI();via='visión IA'}
+else if(isPdf(f)){
+  res=await fromAI();via='visión IA';
+  if(!res.length&&fail>0){res=parseAsp(text);via='lectura directa PDF';fail=0}
+}
 else{res=parseAsp(text);via='texto';if(!res.length){res=await fromAI();via='IA'}}
 
 if(!res.length){
-  if((isImg(f)||isPdf(f))&&fail===0&&totalRows>0){
+  if((isImg(f)||isPdf(f))&&fail===0&&(totalRows>0||/SEM\s*\d{1,2}/.test(text))){
     upd(setAspF,id,{st:'ok',note:'0 fincas de Banasan en este archivo (solo cooperativas o terceros)'});continue;
   }
-  upd(setAspF,id,{st:'err',note:lastAiErr?`Error IA: ${lastAiErr}`:'No se pudo conectar con la IA (/api/leer). Revisa que exista api/leer.js en la raíz del repo y la variable GEMINI_API_KEY en Vercel.'});continue;
+  const shortErr=/429|quota/i.test(lastAiErr)?'Límite diario de consultas gratuitas alcanzado; vuelve a intentar más tarde.':(lastAiErr?'No se pudo analizar este archivo con IA. Verifica tu conexión e intenta de nuevo.':'No se detectaron fincas ni fechas válidas en el archivo.');
+  upd(setAspF,id,{st:'err',note:shortErr});continue;
 }
 setRestr(r=>{const n={...r};res.forEach(([w,d,fi])=>{const k=w+'|'+d,a=n[k]||[];if(!a.includes(fi))n[k]=[...a,fi]});return n});
-upd(setAspF,id,{st:'ok',note:`${res.length} fincas-día de Banasan cargadas (${via}${imgs.length>1?', '+imgs.length+' págs':''})`+(fail?` · ${fail} pág(s) con error de red`:'')})}
-catch(e){upd(setAspF,id,{st:'err',note:'Error: '+(e.message||e)})}}};
+upd(setAspF,id,{st:'ok',note:`${res.length} fincas-día de Banasan cargadas (${via}${imgs.length>1?', '+imgs.length+' págs':''})`})}
+catch(e){upd(setAspF,id,{st:'err',note:'Error al procesar el archivo.'})}}};
 
 const rm=(w,d,f)=>setRestr(r=>({...r,[w+'|'+d]:(r[w+'|'+d]||[]).filter(x=>x!==f)}));
 const add=(w,d,f)=>f&&setRestr(r=>({...r,[w+'|'+d]:[...(r[w+'|'+d]||[]),f]}));
 const nB=Object.values(restr).reduce((a,b)=>a+b.length,0);
 const wkOf=n=>weeks.find(w=>w.n===+n);
-const dm=(ap&&desp[ap])||{};
+const safeProvs=Array.isArray(provs)?provs:[];
+const dm=(ap&&desp&&desp[ap])||{};
 const fw=wkOf(form.w);
 const live=fw&&form.finca&&(restr[form.w+'|'+form.d]||[]).includes(form.finca);
 
@@ -202,12 +218,12 @@ if(!fw||!oc.trim()||!finca)return setErr('Completa semana, día, OC y finca dest
 if((restr[w+'|'+d]||[]).includes(finca)){setConf(c=>c+1);return setErr(`⛔ OPERACIÓN NO PERMITIDA: La finca ${finca} está en aspersión el ${DL[d]} ${fD(addD(fw.start,+d))}`)}
 const k=w+'|'+d;setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:[...((s[ap]||{})[k]||[]),{placa:placa.trim().toUpperCase(),oc:oc.trim(),finca}]}}));
 setErr('');setOk('Despacho registrado correctamente.');setForm(f=>({...f,placa:'',oc:''}))};
-const delE=(k,i)=>setDesp(s=>({...s,[ap]:{...s[ap],[k]:s[ap][k].filter((_,j)=>j!==i)}}));
-const addProv=()=>{const n=(newP||'').trim().toUpperCase();if(n&&!provs.includes(n)){setProvs(p=>[...p,n]);setAp(n)}setNewP(null)};
-const renProv=()=>{const n=(edP||'').trim().toUpperCase();if(!n||n===ap){setEdP(null);return}if(provs.includes(n)){setToast('Ya existe un proveedor con ese nombre.');return}
-setProvs(p=>p.map(x=>x===ap?n:x));setDesp(s=>{const {[ap]:cur,...rest}=s;return cur?{...rest,[n]:cur}:rest});setAp(n);setEdP(null)};
-const delProv=()=>{const r=provs.filter(x=>x!==ap);setProvs(r);setDesp(s=>{const {[ap]:_x,...rest}=s;return rest});setAp(r[0]||'');setDelP(false)};
-const setE=(k,i,p)=>setDesp(s=>({...s,[ap]:{...s[ap],[k]:s[ap][k].map((e,j)=>j===i?{...e,...p}:e)}}));
+const delE=(k,i)=>setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:((s[ap]||{})[k]||[]).filter((_,j)=>j!==i)}}));
+const addProv=()=>{const n=(newP||'').trim().toUpperCase();if(n){if(!safeProvs.includes(n))setProvs(p=>[...(Array.isArray(p)?p:[]),n]);setAp(n);setErr('');setOk('');setForm(f=>({...f,placa:'',oc:'',finca:''}))}setNewP(null)};
+const renProv=()=>{const n=(edP||'').trim().toUpperCase();if(!n||n===ap){setEdP(null);return}if(safeProvs.includes(n)){setToast('Ya existe un proveedor con ese nombre.');return}
+setProvs(p=>(Array.isArray(p)?p:[]).map(x=>x===ap?n:x));setDesp(s=>{const {[ap]:cur,...rest}=s;return cur?{...rest,[n]:cur}:rest});setAp(n);setEdP(null)};
+const delProv=()=>{const r=safeProvs.filter(x=>x!==ap);setProvs(r);setDesp(s=>{const {[ap]:_x,...rest}=s;return rest});setAp(r[0]||'');setDelP(false);setErr('');setOk('')};
+const setE=(k,i,p)=>setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:((s[ap]||{})[k]||[]).map((e,j)=>j===i?{...e,...p}:e)}}));
 
 async function exportX(){try{
 const wb=new ExcelJS.Workbook();const th={style:'thin',color:{argb:'FF000000'}},bd={top:th,left:th,bottom:th,right:th};
@@ -233,13 +249,13 @@ setToast('Excel generado con 2 pestañas.')}
 catch(e){setToast(e&&e.code==='declined'?'Descarga cancelada.':'No se pudo exportar: '+((e&&e.message)||e))}}
 
 const vis=weeks.filter(w=>(!flt||w.n===+flt)&&(!onlyB||D.some((_,d)=>(restr[w.n+'|'+d]||[]).length)));
-const Tab=(k,t)=>html`<button onClick=${()=>setTab(k)} class=${'px-4 py-2 rounded-t-lg font-bold text-sm border-b-4 '+(tab===k?'text-white':'bg-white text-slate-600 border-transparent hover:bg-slate-50')} style=${tab===k?{background:BLUE,borderColor:YEL}:{}}>${t}</button>`;
+const Tab=(k,t)=>html`<button key=${'tab-'+k} onClick=${()=>setTab(k)} class=${'px-4 py-2 rounded-t-lg font-bold text-sm border-b-4 '+(tab===k?'text-white':'bg-white text-slate-600 border-transparent hover:bg-slate-50')} style=${tab===k?{background:BLUE,borderColor:YEL}:{}}>${t}</button>`;
 const sel='border border-slate-300 rounded px-2 py-1.5 text-sm bg-white';
 const nrows=Math.max(6,...[0,1,2,3,4].map(d=>(dm[(fw?fw.n:0)+'|'+d]||[]).length));
 
-if(cloud==='cargando')return html`<div class="p-10 text-center text-slate-500"><style>${CSS}</style>Cargando datos desde la nube…</div>`;
+if(cloud==='cargando')return html`<div class="p-10 text-center text-slate-500 notranslate"><style>${CSS}</style>Cargando datos desde la nube…</div>`;
 const stTxt={cargando:'Cargando…',guardando:'Guardando...',guardado:'Guardado en la nube ✓',error:cloud==='error'?'Sin conexión con la nube: los cambios no se guardarán':'No se pudo guardar en la nube'}[st];
-return html`<div><style>${CSS}</style>
+return html`<${EB}><div class="notranslate"><style>${CSS}</style>
 <div class=${'text-xs text-right px-4 py-1 border-b '+(st==='error'?'bg-red-50 text-red-700':'bg-slate-100 text-slate-500')}>${stTxt}${st==='error'&&html` <button class="underline font-bold" onClick=${()=>cloud==='error'?load(true):setTick(t=>t+1)}>Reintentar</button>`}</div>
 <header class="bg-white border-b-4 shadow-sm" style=${{borderColor:BLUE}}><div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-4">
 <img src="/logo.jpg" alt="BANASAN" style=${{height:52}}/>
@@ -253,7 +269,7 @@ return html`<div><style>${CSS}</style>
 <div class="flex gap-1 mb-0 flex-wrap">${Tab('carga','1 · Carga de archivos')}${Tab('asp','Hoja 1 · Programa de Aspersión')}${Tab('desp','Hoja 2 · Programación de Despachos')}</div>
 <div class="bg-slate-50 border border-slate-200 rounded-b-xl rounded-tr-xl p-4">
 
-${tab==='carga'&&html`<div class="grid md:grid-cols-2 gap-4">
+${tab==='carga'&&html`<div key="view-carga" class="grid md:grid-cols-2 gap-4">
 <${Drop} title="Caja 1 · Calendario Corporativo Bananero" sub="Sube el calendario (foto, PDF o texto). Se habilitan SEM 1 a SEM 52 con su rango lunes–domingo." onFiles=${doCal} files=${calF}>
 <div class="flex items-center gap-2 mt-3 text-sm"><span class="text-slate-500">¿Sin archivo? Generar año:</span><input type="number" value=${yr} onChange=${e=>setYr(+e.target.value)} class=${sel+' w-24'}/>
 <button onClick=${()=>afterW(mkWeeks(isoW1(yr)))} class="px-3 py-1.5 rounded font-bold text-white text-sm" style=${{background:BLUE}}>Generar</button></div>
@@ -264,7 +280,7 @@ ${weeks.length>0&&html`<div class="mt-3 text-sm rounded bg-emerald-50 border bor
 ${nB>0&&html`<button onClick=${()=>setRestr({})} class="flex items-center gap-1 text-red-600 border border-red-300 rounded px-2 py-1 hover:bg-red-50">${Ic('trash',14)} Vaciar todo</button>`}</div>
 <//></div>`}
 
-${tab==='asp'&&html`<div>
+${tab==='asp'&&html`<div key="view-asp">
 <div class="flex flex-wrap items-center gap-3 mb-3 text-sm"><label class="font-bold">Semana:</label>
 <select class=${sel} value=${flt} onChange=${e=>setFlt(e.target.value)}><option value="">Todas (SEM 1 – 52)</option>${weeks.map(w=>html`<option key=${w.n} value=${w.n}>${wl(w)}</option>`)}</select>
 <label class="flex items-center gap-1"><input type="checkbox" checked=${onlyB} onChange=${e=>setOnlyB(e.target.checked)}/> Solo semanas con bloqueos</label>
@@ -280,14 +296,14 @@ ${a.map(f=>html`<span key=${f} class="inline-flex items-center gap-1 m-0.5 px-2 
 ${nB===0&&html`<div class="mt-3 text-sm text-slate-500">La tabla inicia con 0 bloqueos: se llena solo con tus archivos o con registros manuales.</div>`}`}
 </div>`}
 
-${tab==='desp'&&html`<div>
+${tab==='desp'&&html`<div key="view-desp">
 <div class="flex flex-wrap items-center gap-2 mb-3"><span class="font-bold text-sm">Proveedor:</span>
-${provs.map(p=>html`<button key=${p} onClick=${()=>{setAp(p);setEdP(null);setDelP(false)}} class=${'px-3 py-1.5 rounded-full text-sm font-bold border '+(ap===p?'text-white':'bg-white text-slate-600')} style=${ap===p?{background:BLUE,borderColor:BLUE}:{}}>${p}</button>`)}
-${ap&&edP===null&&!delP&&html`<span class="flex gap-1"><button title="Editar nombre" onClick=${()=>setEdP(ap)} class="p-1.5 rounded border bg-white text-slate-600 hover:bg-slate-100">${Ic('pencil',15)}</button><button title="Eliminar proveedor" onClick=${()=>setDelP(true)} class="p-1.5 rounded border bg-white text-red-600 hover:bg-red-50">${Ic('trash',15)}</button></span>`}
-${edP!==null&&html`<span class="flex gap-1"><input autoFocus value=${edP} onChange=${e=>setEdP(e.target.value)} onKeyDown=${e=>e.key==='Enter'&&renProv()} class=${sel}/><button onClick=${renProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar nombre</button><button onClick=${()=>setEdP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}
-${delP&&html`<span class="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded px-2 py-1">¿Eliminar <b>${ap}</b> y todos sus despachos?<button onClick=${delProv} class="px-2 py-0.5 rounded bg-red-600 text-white font-bold">Sí, eliminar</button><button onClick=${()=>setDelP(false)} class="px-2 text-slate-600">Cancelar</button></span>`}
-${newP===null?html`<button onClick=${()=>setNewP('')} class="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold border-2 border-dashed" style=${{color:BLUE,borderColor:BLUE}}>${Ic('plus',14)} Nuevo Proveedor</button>`
-:html`<span class="flex gap-1"><input autofocus placeholder="Nombre del proveedor" value=${newP} onChange=${e=>setNewP(e.target.value)} onKeyDown=${e.key==='Enter'&&addProv()} class=${sel}/><button onClick=${addProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar</button><button onClick=${()=>setNewP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}</div>
+${safeProvs.map(p=>html`<button key=${'prov-'+p} onClick=${()=>{setAp(p);setEdP(null);setDelP(false);setNewP(null);setErr('');setOk('')}} class=${'px-3 py-1.5 rounded-full text-sm font-bold border '+(ap===p?'text-white':'bg-white text-slate-600')} style=${ap===p?{background:BLUE,borderColor:BLUE}:{}}>${p}</button>`)}
+${ap&&edP===null&&!delP&&html`<span key="prov-actions" class="flex gap-1"><button title="Editar nombre" onClick=${()=>{setEdP(ap);setNewP(null)}} class="p-1.5 rounded border bg-white text-slate-600 hover:bg-slate-100">${Ic('pencil',15)}</button><button title="Eliminar proveedor" onClick=${()=>{setDelP(true);setNewP(null)}} class="p-1.5 rounded border bg-white text-red-600 hover:bg-red-50">${Ic('trash',15)}</button></span>`}
+${edP!==null&&html`<span key="prov-edit" class="flex gap-1"><input autoFocus value=${edP} onChange=${e=>setEdP(e.target.value)} onKeyDown=${e=>{if(e.key==='Enter')renProv();if(e.key==='Escape')setEdP(null)}} class=${sel}/><button onClick=${renProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar nombre</button><button onClick=${()=>setEdP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}
+${delP&&html`<span key="prov-del" class="flex items-center gap-2 text-sm bg-red-50 border border-red-200 rounded px-2 py-1">¿Eliminar <b>${ap}</b> y todos sus despachos?<button onClick=${delProv} class="px-2 py-0.5 rounded bg-red-600 text-white font-bold">Sí, eliminar</button><button onClick=${()=>setDelP(false)} class="px-2 text-slate-600">Cancelar</button></span>`}
+${newP===null?html`<button key="prov-new-btn" onClick=${()=>{setNewP('');setEdP(null);setDelP(false)}} class="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold border-2 border-dashed" style=${{color:BLUE,borderColor:BLUE}}>${Ic('plus',14)} Nuevo Proveedor</button>`
+:html`<span key="prov-new-form" class="flex gap-1"><input autoFocus placeholder="Nombre del proveedor" value=${newP} onChange=${e=>setNewP(e.target.value)} onKeyDown=${e=>{if(e.key==='Enter')addProv();if(e.key==='Escape')setNewP(null)}} class=${sel}/><button onClick=${addProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar</button><button onClick=${()=>setNewP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}</div>
 ${!weeks.length?html`<div class="p-6 text-center text-slate-500">Primero carga el calendario (pestaña 1).</div>`:html`
 <div class="bg-white border rounded-lg p-3 mb-3"><div class="grid grid-cols-2 md:grid-cols-6 gap-2 items-end text-sm">
 <label class="md:col-span-2 font-bold">Semana<select class=${sel+' w-full font-normal'} value=${form.w} onChange=${e=>setF('w',e.target.value)}>${weeks.map(w=>html`<option key=${w.n} value=${w.n}>${wl(w)}</option>`)}</select></label>
@@ -309,4 +325,4 @@ return html`<${React.Fragment} key=${d}><td class=${'border border-slate-300 h-7
 <td class=${'border border-slate-300 px-1 font-bold '+(e?(bad?'bg-red-600 text-white':bdg(e.finca)):'')}>${e&&html`<span class="flex justify-between gap-1">${e.finca}<button onClick=${()=>delE(k,i)} title="Eliminar">${Ic('x',12)}</button></span>`}</td><//>`})}</tr>`)}</tbody></table></div>
 <div class="mt-2 text-xs text-slate-500 flex gap-3 flex-wrap"><span class="px-2 rounded bg-emerald-100 text-emerald-800">Orgánica</span><span class="px-2 rounded bg-sky-100 text-sky-800">Convencional</span><span class="px-2 rounded bg-amber-100 text-amber-800">Placa pendiente (clic en la celda para escribirla)</span><span class="px-2 rounded bg-red-600 text-white">Cruce con aspersión (agregado después)</span></div>`}
 </div>`}
-</div></main></div>`}
+</div></main></div><//>`}
