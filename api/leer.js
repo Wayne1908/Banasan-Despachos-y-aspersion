@@ -1,6 +1,5 @@
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
   const { prompt, images = [] } = req.body || {};
   const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
   const anthropicKey = (process.env.ANTHROPIC_API_KEY || '').trim();
