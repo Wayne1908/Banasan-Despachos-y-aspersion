@@ -2,36 +2,66 @@ export default async function handler(req, res) {
   const geminiKey = (process.env.GEMINI_API_KEY || '').trim();
   const anthropicKey = (process.env.ANTHROPIC_API_KEY || '').trim();
 
-  async function callGemini(parts, useJson = true) {
+  async function tryModel(modelPath, parts, useJson) {
     const genCfg = { temperature: 0 };
     if (useJson) genCfg.responseMimeType = 'application/json';
-    const payload = JSON.stringify({
-      contents: [{ role: 'user', parts }],
-      generationConfig: genCfg
+    const cleanPath = modelPath.startsWith('models/') ? modelPath : `models/${modelPath}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/${cleanPath}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts }],
+        generationConfig: genCfg
+      })
     });
+    if (!r.ok) {
+      const txt = await r.text();
+      throw new Error(`[${cleanPath} -> ${r.status}] ${txt}`);
+    }
+    const okRes = await r.json();
+    return okRes.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+  }
 
-    const targets = [
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-3.0-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`,
-      `https://aiplatform.googleapis.com/v1/publishers/google/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(geminiKey)}`
-    ];
-
+  async function callGemini(parts, useJson = true) {
     const errs = [];
-    for (const url of targets) {
-      const modelName = url.split('/models/')[1].split(':')[0];
-      const host = url.includes('aiplatform') ? 'aiplatform' : 'generativelanguage';
-      const r = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: payload
-      });
-      if (r.ok) {
-        const okRes = await r.json();
-        return okRes.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const initialModels = ['models/gemini-3.8-flash', 'models/gemini-3-flash-preview'];
+    for (const m of initialModels) {
+      try {
+        return await tryModel(m, parts, useJson);
+      } catch (e) {
+        errs.push(e.message);
       }
-      const errBody = await r.text();
-      errs.push(`[${host}/${modelName} -> ${r.status}] ${errBody}`);
+    }
+
+    const listRes = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`
+    );
+    if (!listRes.ok) {
+      throw new Error(errs.join(' | ') + ' | ListModels: ' + await listRes.text());
+    }
+    const listData = await listRes.json();
+    const candidates = (listData.models || [])
+      .filter(
+        (m) =>
+          (m.supportedGenerationMethods || []).includes('generateContent') &&
+          /gemini/i.test(m.name) &&
+          !/embedding|aqa|imagen|veo|tts|audio|robotics|computer-use/i.test(m.name) &&
+          !initialModels.includes(m.name)
+      )
+      .sort((a, b) => {
+        const af = /flash/i.test(a.name) ? 1 : 0;
+        const bf = /flash/i.test(b.name) ? 1 : 0;
+        if (af !== bf) return bf - af;
+        return b.name.localeCompare(a.name);
+      });
+
+    for (const m of candidates.slice(0, 4)) {
+      try {
+        return await tryModel(m.name, parts, useJson);
+      } catch (e) {
+        errs.push(e.message);
+      }
     }
     throw new Error(errs.join(' | '));
   }
