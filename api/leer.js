@@ -7,6 +7,7 @@ export default async function handler(req, res) {
     if (useJson) genCfg.responseMimeType = 'application/json';
     const cleanPath = modelPath.startsWith('models/') ? modelPath : `models/${modelPath}`;
     const url = `https://generativelanguage.googleapis.com/v1beta/${cleanPath}:generateContent?key=${encodeURIComponent(geminiKey)}`;
+
     const r = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -15,17 +16,22 @@ export default async function handler(req, res) {
         generationConfig: genCfg
       })
     });
+
     if (!r.ok) {
       const txt = await r.text();
       throw new Error(`[${cleanPath} -> ${r.status}] ${txt}`);
     }
+
     const okRes = await r.json();
-    return okRes.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const resParts = okRes.candidates?.[0]?.content?.parts || [];
+    const textPart = resParts.find((p) => p.text && !p.thought) || resParts[resParts.length - 1];
+    return textPart?.text || '[]';
   }
 
   async function callGemini(parts, useJson = true) {
     const errs = [];
-    const initialModels = ['models/gemini-3.8-flash', 'models/gemini-3-flash-preview'];
+    const initialModels = ['models/gemini-3.8-flash'];
+
     for (const m of initialModels) {
       try {
         return await tryModel(m, parts, useJson);
@@ -38,8 +44,9 @@ export default async function handler(req, res) {
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(geminiKey)}`
     );
     if (!listRes.ok) {
-      throw new Error(errs.join(' | ') + ' | ListModels: ' + await listRes.text());
+      throw new Error(errs.join(' | ') + ' | ListModels: ' + (await listRes.text()));
     }
+
     const listData = await listRes.json();
     const candidates = (listData.models || [])
       .filter(
@@ -63,12 +70,13 @@ export default async function handler(req, res) {
         errs.push(e.message);
       }
     }
+
     throw new Error(errs.join(' | '));
   }
 
   if (req.method === 'GET') {
     if (!geminiKey && !anthropicKey) {
-      return res.status(500).json({ ok: false, error: 'Falta GEMINI_API_KEY en Vercel (Environment Variables).' });
+      return res.status(500).json({ ok: false, error: 'Falta GEMINI_API_KEY en Vercel.' });
     }
     try {
       const txt = geminiKey ? await callGemini([{ text: 'Responde solo OK' }], false) : 'Anthropic OK';
