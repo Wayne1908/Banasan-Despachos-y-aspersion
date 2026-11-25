@@ -75,11 +75,58 @@ if(dm){dy=D.indexOf(dm[1]);rest=rest.trim().slice(dm[0].length)}
 if(wk!==null&&dy!==null)findF(rest,false).forEach(f=>out.push([wk,dy,f]))}
 return out}
 
-/* ---- Renderizado de PDF en alta nitidez e IA ---- */
-async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';
-for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const tc=await p.getTextContent();const rows={};
-tc.items.forEach(it=>{const y=Math.round(it.transform[5]/5)*5;(rows[y]=rows[y]||[]).push(it)});
-text+=Object.keys(rows).sort((a,b)=>b-a).map(y=>rows[y].sort((a,b)=>a.transform[4]-b.transform[4]).map(x=>x.str).join(' ')).join('\n')+'\n';
+/* ---- Renderizado de PDF en alta nitidez, lectura geométrica de respaldo e IA ---- */
+async function pdfInfo(file,max,img){const pdf=await pdfjsLib.getDocument({data:await file.arrayBuffer()}).promise;const blobs=[];let text='';const OPS=pdfjsLib.OPS;
+const meses={ENERO:0,FEBRERO:1,MARZO:2,ABRIL:3,MAYO:4,JUNIO:5,JULIO:6,AGOSTO:7,SEPTIEMBRE:8,OCTUBRE:9,NOVIEMBRE:10,DICIEMBRE:11};
+const clusterY=(arr,tol)=>{const s=[...arr].sort((a,b)=>a.vy-b.vy);const out=[];for(const it of s){const g=out[out.length-1];if(g&&it.vy-g.yLast<=tol){g.items.push(it);g.yLast=it.vy}else out.push({y0:it.vy,yLast:it.vy,items:[it]})}return out};
+for(let i=1;i<=Math.min(pdf.numPages,max);i++){const p=await pdf.getPage(i);const vp=p.getViewport({scale:1});const tc=await p.getTextContent();
+const items=tc.items.filter(it=>it.str.trim()).map(it=>{const [vx,vy]=vp.convertToViewportPoint(it.transform[4],it.transform[5]);return {str:it.str,vx,vy}});
+const rawStream=norm(items.map(it=>it.str).join(' '));
+const sortedTxt=clusterY(items,5).map(g=>g.items.sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')).join('\n');
+const cleanNoVig=(rawStream+' '+sortedTxt).replace(/VIGENCIA[\s:]*\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*20\d\d/g,' ').replace(/\b\d{1,2}\s*\/\s*\d{1,2}\s*\/\s*20\d\d\b/g,' ');
+const anoHdr=items.find(it=>/^ANO$/.test(norm(it.str.trim())));
+const anoVal=anoHdr&&items.filter(it=>/^202\d$/.test(it.str.trim())&&Math.abs(it.vx-anoHdr.vx)<80&&Math.abs(it.vy-anoHdr.vy)<45).sort((a,b)=>Math.hypot(a.vx-anoHdr.vx,a.vy-anoHdr.vy)-Math.hypot(b.vx-anoHdr.vx,b.vy-anoHdr.vy))[0];
+const yrM=anoVal?[null,anoVal.str.trim()]:(cleanNoVig.match(/(?:ANO|DE)\s*(202\d)\b/)||cleanNoVig.match(/\b(202[4-9])\b/));
+const docYr=yrM?+yrM[1]:2026;
+const opList=await p.getOperatorList();let ctm=[1,0,0,1,0,0],stk=[];const hSegs=[],vSegs=[];
+const mul=(m1,m2)=>[m1[0]*m2[0]+m1[2]*m2[1],m1[1]*m2[0]+m1[3]*m2[1],m1[0]*m2[2]+m1[2]*m2[3],m1[1]*m2[2]+m1[3]*m2[3],m1[0]*m2[4]+m1[2]*m2[5]+m1[4],m1[1]*m2[4]+m1[3]*m2[5]+m1[5]];
+const pt=(x,y)=>{const px=ctm[0]*x+ctm[2]*y+ctm[4],py=ctm[1]*x+ctm[3]*y+ctm[5];return vp.convertToViewportPoint(px,py)};
+const addSeg=(x1,y1,x2,y2)=>{const [ax,ay]=pt(x1,y1),[bx,by]=pt(x2,y2);
+if(Math.abs(ay-by)<3&&Math.abs(bx-ax)>20)hSegs.push({x1:Math.min(ax,bx),x2:Math.max(ax,bx),y:(ay+by)/2});
+else if(Math.abs(ax-bx)<3&&Math.abs(by-ay)>35)vSegs.push({x:(ax+bx)/2,y1:Math.min(ay,by),y2:Math.max(ay,by)})};
+const addRect=(x,y,w,h)=>{addSeg(x,y,x+w,y);addSeg(x,y+h,x+w,y+h);addSeg(x,y,x,y+h);addSeg(x+w,y,x+w,y+h)};
+for(let k=0;k<opList.fnArray.length;k++){const fn=opList.fnArray[k],args=opList.argsArray[k];
+if(fn===OPS.save)stk.push([...ctm]);else if(fn===OPS.restore){if(stk.length)ctm=stk.pop()}else if(fn===OPS.transform)ctm=mul(ctm,args);
+else if(fn===OPS.rectangle)addRect(args[0],args[1],args[2],args[3]);
+else if(fn===OPS.constructPath&&args){
+if(typeof args[0]==='number'){const buf=Array.isArray(args[1])?args[1][0]:args[1];if(buf&&typeof buf.length==='number'){let ci=0,cx=0,cy=0,sx=0,sy=0;while(ci<buf.length){const op=buf[ci++];if(op===0){cx=sx=buf[ci++];cy=sy=buf[ci++]}else if(op===1){const nx=buf[ci++],ny=buf[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(op===2){ci+=4;cx=buf[ci++];cy=buf[ci++]}else if(op===3){ci+=2;cx=buf[ci++];cy=buf[ci++]}else if(op===4){addSeg(cx,cy,sx,sy);cx=sx;cy=sy}else break}}}
+else{const subOps=args[0];const rawC=Array.isArray(args[1])&&args[1].length&&typeof args[1][0]!=='number'?args[1][0]:args[1];
+if(subOps&&rawC&&typeof rawC.length==='number'){let ci=0,cx=0,cy=0,sx=0,sy=0;for(const so of subOps){if(so===OPS.moveTo){cx=sx=rawC[ci++];cy=sy=rawC[ci++]}else if(so===OPS.lineTo){const nx=rawC[ci++],ny=rawC[ci++];addSeg(cx,cy,nx,ny);cx=nx;cy=ny}else if(so===OPS.curveTo){ci+=4;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.curveTo2||so===OPS.curveTo3){ci+=2;cx=rawC[ci++];cy=rawC[ci++]}else if(so===OPS.closePath){addSeg(cx,cy,sx,sy);cx=sx;cy=sy}else if(so===OPS.rectangle){addRect(rawC[ci],rawC[ci+1],rawC[ci+2],rawC[ci+3]);ci+=4}}}}}}
+const fechaHdr=items.find(it=>/^FECHA$/i.test(norm(it.str.trim())));
+const fincaHdr=items.find(it=>/^FINCA$/i.test(norm(it.str.trim())));
+const nextHdr=fincaHdr&&items.filter(it=>Math.abs(it.vy-fincaHdr.vy)<15&&it.vx>fincaHdr.vx+15).sort((a,b)=>a.vx-b.vx)[0];
+const vLeft=fechaHdr&&fincaHdr&&vSegs.filter(v=>v.x>fechaHdr.vx&&v.x<fincaHdr.vx).sort((a,b)=>(b.y2-b.y1)-(a.y2-a.y1))[0];
+const vRight=fincaHdr&&nextHdr&&vSegs.filter(v=>v.x>fincaHdr.vx&&v.x<nextHdr.vx).sort((a,b)=>(b.y2-b.y1)-(a.y2-a.y1))[0];
+const fxMin=vLeft?vLeft.x-2:(fechaHdr&&fincaHdr?(fechaHdr.vx+fincaHdr.vx)/2:(fincaHdr?fincaHdr.vx-95:160));
+const fxMax=vRight?vRight.x+2:(fincaHdr&&nextHdr?(fincaHdr.vx+nextHdr.vx)/2:(fincaHdr?fincaHdr.vx+145:360));
+const allYs=hSegs.filter(s=>s.x1<=fxMin-25&&s.x2>=fxMin-5).map(s=>s.y).sort((a,b)=>a-b);
+const cutYs=[];let last=-1e9;allYs.forEach(y=>{if(y-last>3){cutYs.push(y);last=y}});
+const dayRe=/^(LUNES|MARTES|MIERCOLES|JUEVES|VIERNES|SABADO|DOMINGO)\s*,\s*(\d{1,2})\s+DE\s+([A-Z]+)(?:\s+DE\s+(202\d))?/i;
+const leftItems=items.filter(it=>it.vx<fxMin);
+let boxes=[];
+if(cutYs.length>=2){for(let j=0;j<cutYs.length-1;j++){const yTop=cutYs[j],yBottom=cutYs[j+1];
+const cellItems=leftItems.filter(it=>it.vy>=yTop-2&&it.vy<=yBottom+2).sort((a,b)=>Math.abs(a.vy-b.vy)<5?a.vx-b.vx:a.vy-b.vy);
+const txt=norm(cellItems.map(x=>x.str).join(' ')).replace(/\s*,\s*/g,', ').replace(/\s+/g,' ').trim();
+const m=txt.match(dayRe);if(m)boxes.push({d:m[1],dd:+m[2],mm:meses[m[3]],yy:m[4]?+m[4]:docYr,yTop,yBottom,cy:(yTop+yBottom)/2})}}
+if(!boxes.length){const days=clusterY(leftItems,16).map(g=>{const arr=g.items.sort((a,b)=>Math.abs(a.vy-b.vy)<5?a.vx-b.vx:a.vy-b.vy);
+const txt=norm(arr.map(x=>x.str).join(' ')).replace(/\s*,\s*/g,', ').replace(/\s+/g,' ').trim();return {m:txt.match(dayRe),vy:(g.y0+g.yLast)/2}}).filter(x=>x.m);
+boxes=days.map((x,idx)=>({d:x.m[1],dd:+x.m[2],mm:meses[x.m[3]],yy:x.m[4]?+x.m[4]:docYr,yTop:idx>0?(days[idx-1].vy+x.vy)/2:-1e9,yBottom:idx<days.length-1?(x.vy+days[idx+1].vy)/2:1e9,cy:x.vy}))}
+let wkNum=(boxes.length&&boxes[0].mm!==undefined)?isoWk(boxes[0].dd,boxes[0].mm,boxes[0].yy):null;
+if(!wkNum){const wm=cleanNoVig.match(/SEMANA\s*[:\-]?\s*(\d{1,2})\b/);if(wm)wkNum=+wm[1]}
+if(wkNum)text+=`SEM ${wkNum}\n`;
+if(boxes.length){const lines=clusterY(items.filter(it=>it.vx>=fxMin&&it.vx<=fxMax),4).map(g=>({vy:(g.y0+g.yLast)/2,t:g.items.sort((a,b)=>a.vx-b.vx).map(x=>x.str).join(' ')})).filter(r=>!/(TOTAL|SISTEMA DE GESTION|RECOMENDACIONES|FINCA|PERIODO)/i.test(norm(r.t)));
+lines.forEach(r=>{const hit=boxes.find(b=>r.vy>=b.yTop-2&&r.vy<=b.yBottom+2)||boxes.reduce((a,b)=>Math.abs(b.cy-r.vy)<Math.abs(a.cy-r.vy)?b:a);text+=`${hit.d} ${r.t}\n`})}
+else{text+=sortedTxt+'\n'}
 if(img){const v=p.getViewport({scale:2.2});const c=document.createElement('canvas');c.width=v.width;c.height=v.height;await p.render({canvasContext:c.getContext('2d'),viewport:v}).promise;blobs.push(await new Promise(r=>c.toBlob(r,'image/png')))}}
 return {text,blobs}}
 
@@ -126,7 +173,7 @@ ${children}<${FL} files=${files}/></div>`}
 export default function App(){
 const [tab,setTab]=useState('carga'),[weeks,setWeeks]=useState([]),[restr,setRestr]=useState({}),[calF,setCalF]=useState([]),[aspF,setAspF]=useState([]);
 const [provs,setProvs]=useState([]),[ap,setAp]=useState(''),[newP,setNewP]=useState(null),[desp,setDesp]=useState({}),[conf,setConf]=useState(0),[edP,setEdP]=useState(null),[delP,setDelP]=useState(false);
-const [flt,setFlt]=useState(''),[onlyB,setOnlyB]=useState(false),[form,setForm]=useState({w:'',d:'0',placa:'',oc:'',finca:''});
+const [flt,setFlt]=useState(''),[onlyB,setOnlyB]=useState(false),[form,setForm]=useState({w:'',d:'0',placa:'',oc:'',btos:'',finca:''});
 const [err,setErr]=useState(''),[ok,setOk]=useState(''),[toast,setToast]=useState(''),[yr,setYr]=useState(2026);
 const upd=(set,id,p)=>set(a=>a.map(x=>x.id===id?{...x,...p}:x));
 const afterW=ws=>{setWeeks(ws);const t=Date.now();const c=ws.find(w=>t>=w.start.getTime()&&t<w.start.getTime()+7*864e5);setForm(f=>({...f,w:String((c||ws[0]).n)}))};
@@ -212,14 +259,14 @@ const dm=(ap&&desp&&desp[ap])||{};
 const fw=wkOf(form.w);
 const live=fw&&form.finca&&(restr[form.w+'|'+form.d]||[]).includes(form.finca);
 
-const reg=()=>{setOk('');const {w,d,placa,oc,finca}=form;
+const reg=()=>{setOk('');const {w,d,placa,oc,btos,finca}=form;
 if(!ap)return setErr('Primero crea o selecciona un proveedor.');
-if(!fw||!oc.trim()||!finca)return setErr('Completa semana, día, OC y finca destino. La placa es opcional: puedes escribirla después en la tabla.');
+if(!fw||!oc.trim()||!finca)return setErr('Completa semana, día, OC y finca destino. Placas y BTOS son opcionales y puedes editarlos luego en la tabla.');
 if((restr[w+'|'+d]||[]).includes(finca)){setConf(c=>c+1);return setErr(`⛔ OPERACIÓN NO PERMITIDA: La finca ${finca} está en aspersión el ${DL[d]} ${fD(addD(fw.start,+d))}`)}
-const k=w+'|'+d;setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:[...((s[ap]||{})[k]||[]),{placa:placa.trim().toUpperCase(),oc:oc.trim(),finca}]}}));
-setErr('');setOk('Despacho registrado correctamente.');setForm(f=>({...f,placa:'',oc:''}))};
+const k=w+'|'+d;setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:[...((s[ap]||{})[k]||[]),{placa:placa.trim().toUpperCase(),oc:oc.trim(),btos:String(btos||'').trim(),finca}]}}));
+setErr('');setOk('Despacho registrado correctamente.');setForm(f=>({...f,placa:'',oc:'',btos:''}))};
 const delE=(k,i)=>setDesp(s=>({...s,[ap]:{...(s[ap]||{}),[k]:((s[ap]||{})[k]||[]).filter((_,j)=>j!==i)}}));
-const addProv=()=>{const n=(newP||'').trim().toUpperCase();if(n){if(!safeProvs.includes(n))setProvs(p=>[...(Array.isArray(p)?p:[]),n]);setAp(n);setErr('');setOk('');setForm(f=>({...f,placa:'',oc:'',finca:''}))}setNewP(null)};
+const addProv=()=>{const n=(newP||'').trim().toUpperCase();if(n){if(!safeProvs.includes(n))setProvs(p=>[...(Array.isArray(p)?p:[]),n]);setAp(n);setErr('');setOk('');setForm(f=>({...f,placa:'',oc:'',btos:'',finca:''}))}setNewP(null)};
 const renProv=()=>{const n=(edP||'').trim().toUpperCase();if(!n||n===ap){setEdP(null);return}if(safeProvs.includes(n)){setToast('Ya existe un proveedor con ese nombre.');return}
 setProvs(p=>(Array.isArray(p)?p:[]).map(x=>x===ap?n:x));setDesp(s=>{const {[ap]:cur,...rest}=s;return cur?{...rest,[n]:cur}:rest});setAp(n);setEdP(null)};
 const delProv=()=>{const r=safeProvs.filter(x=>x!==ap);setProvs(r);setDesp(s=>{const {[ap]:_x,...rest}=s;return rest});setAp(r[0]||'');setDelP(false);setErr('');setOk('')};
@@ -230,13 +277,13 @@ const wb=new ExcelJS.Workbook();const th={style:'thin',color:{argb:'FF000000'}},
 const put=(ws,r,c,v,o={})=>{const x=ws.getCell(r,c);x.value=v;x.border=bd;x.alignment={horizontal:o.l?'left':'center',vertical:'middle',wrapText:true};x.font={name:'Calibri',size:11,bold:!!o.b,color:{argb:o.col||'FF000000'}};if(o.bg)x.fill={type:'pattern',pattern:'solid',fgColor:{argb:o.bg}}};
 const G='FFD9D9D9',Y='FFFFFF00';
 const w1=wb.addWorksheet('Programacion_Despachos');w1.getColumn(1).width=8;
-for(let d=0;d<5;d++){[10,10,23].forEach((w,i)=>w1.getColumn(2+d*3+i).width=w);for(let i=0;i<3;i++)put(w1,2,2+d*3+i,null,{b:1,bg:Y});w1.mergeCells(2,2+d*3,2,4+d*3);w1.getCell(2,2+d*3).value=D[d]}
-for(let c=1;c<=16;c++)put(w1,1,c,null,{b:1,bg:'FF0054A6',col:'FFFFFFFF'});w1.mergeCells(1,1,1,16);w1.getCell(1,1).value=`PROGRAMACIÓN DE DESPACHOS (${ap||'NOMBRE DEL PROVEEDOR'})`;w1.getRow(1).height=22;put(w1,2,1,null);w1.getRow(2).height=18;
+for(let d=0;d<5;d++){[10,10,8,23].forEach((w,i)=>w1.getColumn(2+d*4+i).width=w);for(let i=0;i<4;i++)put(w1,2,2+d*4+i,null,{b:1,bg:Y});w1.mergeCells(2,2+d*4,2,5+d*4);w1.getCell(2,2+d*4).value=D[d]}
+for(let c=1;c<=21;c++)put(w1,1,c,null,{b:1,bg:'FF0054A6',col:'FFFFFFFF'});w1.mergeCells(1,1,1,21);w1.getCell(1,1).value=`PROGRAMACIÓN DE DESPACHOS (${ap||'NOMBRE DEL PROVEEDOR'})`;w1.getRow(1).height=22;put(w1,2,1,null);w1.getRow(2).height=18;
 let wks=weeks.filter(w=>[0,1,2,3,4].some(d=>(dm[w.n+'|'+d]||[]).length));if(!wks.length&&weeks.length)wks=[fw||weeks[0]];
 let r=3;wks.forEach(w=>{const n=Math.max(6,...[0,1,2,3,4].map(d=>(dm[w.n+'|'+d]||[]).length));
-put(w1,r,1,'SEM',{b:1,bg:G});for(let d=0;d<5;d++){put(w1,r,2+d*3,'PLACAS',{b:1,bg:G});put(w1,r,3+d*3,'OC',{b:1,bg:G});put(w1,r,4+d*3,`${D[d]} ${fX(addD(w.start,d))}`,{b:1,bg:G})}
+put(w1,r,1,'SEM',{b:1,bg:G});for(let d=0;d<5;d++){put(w1,r,2+d*4,'PLACAS',{b:1,bg:G});put(w1,r,3+d*4,'OC',{b:1,bg:G});put(w1,r,4+d*4,'BTOS',{b:1,bg:G});put(w1,r,5+d*4,`${D[d]} ${fX(addD(w.start,d))}`,{b:1,bg:G})}
 w1.getRow(r).height=32;const top=r+1;
-for(let i=0;i<n;i++){put(w1,top+i,1,null,{b:1});for(let d=0;d<5;d++){const e=(dm[w.n+'|'+d]||[])[i]||{};put(w1,top+i,2+d*3,e.placa||null,{l:1});put(w1,top+i,3+d*3,e.oc||null,{b:1});put(w1,top+i,4+d*3,e.finca||null,{b:1,l:1})}}
+for(let i=0;i<n;i++){put(w1,top+i,1,null,{b:1});for(let d=0;d<5;d++){const e=(dm[w.n+'|'+d]||[])[i]||{};const bv=e.btos!==undefined&&e.btos!==''&&!isNaN(+e.btos)?+e.btos:(e.btos||null);put(w1,top+i,2+d*4,e.placa||null,{l:1});put(w1,top+i,3+d*4,e.oc||null,{b:1});put(w1,top+i,4+d*4,bv,{b:1});put(w1,top+i,5+d*4,e.finca||null,{b:1,l:1})}}
 w1.mergeCells(top,1,top+n-1,1);w1.getCell(top,1).value=w.n;r=top+n});
 const w2=wb.addWorksheet('Programa_Aspersion');[12,18,18,18,18,18,18,18].forEach((w,i)=>w2.getColumn(i+1).width=w);
 for(let c=1;c<=8;c++)put(w2,1,c,null,{b:1,bg:'FF0054A6',col:'FFFFFFFF'});w2.mergeCells('A1:H1');w2.getCell('A1').value='PROGRAMA DE ASPERSIÓN SEMANAL';w2.getRow(1).height=24;
@@ -305,23 +352,24 @@ ${delP&&html`<span key="prov-del" class="flex items-center gap-2 text-sm bg-red-
 ${newP===null?html`<button key="prov-new-btn" onClick=${()=>{setNewP('');setEdP(null);setDelP(false)}} class="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold border-2 border-dashed" style=${{color:BLUE,borderColor:BLUE}}>${Ic('plus',14)} Nuevo Proveedor</button>`
 :html`<span key="prov-new-form" class="flex gap-1"><input autoFocus placeholder="Nombre del proveedor" value=${newP} onChange=${e=>setNewP(e.target.value)} onKeyDown=${e=>{if(e.key==='Enter')addProv();if(e.key==='Escape')setNewP(null)}} class=${sel}/><button onClick=${addProv} class="px-3 rounded text-white text-sm font-bold" style=${{background:BLUE}}>Guardar</button><button onClick=${()=>setNewP(null)} class="px-2 text-slate-500">${Ic('x',16)}</button></span>`}</div>
 ${!weeks.length?html`<div class="p-6 text-center text-slate-500">Primero carga el calendario (pestaña 1).</div>`:html`
-<div class="bg-white border rounded-lg p-3 mb-3"><div class="grid grid-cols-2 md:grid-cols-6 gap-2 items-end text-sm">
+<div class="bg-white border rounded-lg p-3 mb-3"><div class="grid grid-cols-2 md:grid-cols-7 gap-2 items-end text-sm">
 <label class="md:col-span-2 font-bold">Semana<select class=${sel+' w-full font-normal'} value=${form.w} onChange=${e=>setF('w',e.target.value)}>${weeks.map(w=>html`<option key=${w.n} value=${w.n}>${wl(w)}</option>`)}</select></label>
 <label class="font-bold">Día<select class=${sel+' w-full font-normal'} value=${form.d} onChange=${e=>setF('d',e.target.value)}>${DL.slice(0,5).map((x,i)=>html`<option key=${i} value=${i}>${x}${fw?' '+fR(addD(fw.start,i)):''}</option>`)}</select></label>
 <label class="font-bold">Placas <span class="font-normal text-slate-400">(opcional)</span><input class=${sel+' w-full font-normal'} placeholder="WNQ-072" value=${form.placa} onChange=${e=>setF('placa',e.target.value)}/></label>
 <label class="font-bold">OC<input class=${sel+' w-full font-normal'} placeholder="40449" value=${form.oc} onChange=${e=>setF('oc',e.target.value)}/></label>
+<label class="font-bold">Bultos <span class="font-normal text-slate-400">(BTOS)</span><input type="number" min="0" class=${sel+' w-full font-normal'} placeholder="630" value=${form.btos} onChange=${e=>setF('btos',e.target.value)}/></label>
 <label class="font-bold">Finca destino<select class=${sel+' w-full font-normal '+(live?'border-red-600 bg-red-50 text-red-700':'')} value=${form.finca} onChange=${e=>setF('finca',e.target.value)}><option value="">Seleccionar…</option>
 <optgroup label="Orgánicas">${ORG.map(f=>html`<option key=${f}>${f}</option>`)}</optgroup><optgroup label="Convencionales">${CONV.map(f=>html`<option key=${f}>${f}</option>`)}</optgroup></select></label></div>
 <div class="mt-3 flex flex-wrap items-center gap-3"><button onClick=${reg} class="flex items-center gap-1 px-4 py-2 rounded-lg text-white font-bold" style=${{background:BLUE}}>${Ic('plus',16)} Registrar despacho</button>
 ${live&&!err&&html`<span class="text-red-600 text-sm font-bold">${Ic('warn',16,'inline')} Esta finca está en aspersión ese día: el guardado será bloqueado.</span>`}
 ${ok&&html`<span class="text-emerald-700 text-sm font-bold">${ok}</span>`}</div>
 ${err&&html`<div class="mt-3 rounded-lg bg-red-600 text-white font-bold px-4 py-3">${err}</div>`}</div>
-<div class="overflow-x-auto bg-white border rounded"><table class="border-collapse w-full" style=${{minWidth:1000}}><thead>
-<tr><th colSpan="16" class="text-white py-2 text-base" style=${{background:BLUE}}>PROGRAMACIÓN DE DESPACHOS (${ap||'NOMBRE DEL PROVEEDOR'})</th></tr><tr><th class="border border-slate-400"></th>${DL.slice(0,5).map(x=>html`<th key=${x} colSpan="3" class="border border-slate-400 py-1" style=${{background:'#FFFF00'}}>${x.replace('É','E')}</th>`)}</tr>
-<tr><th class="border border-slate-400 bg-slate-300 px-2">SEM</th>${[0,1,2,3,4].map(d=>html`<${React.Fragment} key=${d}><th class="border border-slate-400 bg-slate-300 px-1">PLACAS</th><th class="border border-slate-400 bg-slate-300 px-1">OC</th><th class="border border-slate-400 bg-slate-300 px-1">${fw?D[d]+' '+fX(addD(fw.start,d)):D[d]}</th><//>`)}</tr></thead>
+<div class="overflow-x-auto bg-white border rounded"><table class="border-collapse w-full" style=${{minWidth:1250}}><thead>
+<tr><th colSpan="21" class="text-white py-2 text-base" style=${{background:BLUE}}>PROGRAMACIÓN DE DESPACHOS (${ap||'NOMBRE DEL PROVEEDOR'})</th></tr><tr><th class="border border-slate-400"></th>${DL.slice(0,5).map(x=>html`<th key=${x} colSpan="4" class="border border-slate-400 py-1" style=${{background:'#FFFF00'}}>${x.replace('É','E')}</th>`)}</tr>
+<tr><th class="border border-slate-400 bg-slate-300 px-2">SEM</th>${[0,1,2,3,4].map(d=>html`<${React.Fragment} key=${d}><th class="border border-slate-400 bg-slate-300 px-1">PLACAS</th><th class="border border-slate-400 bg-slate-300 px-1">OC</th><th class="border border-slate-400 bg-slate-300 px-1">BTOS</th><th class="border border-slate-400 bg-slate-300 px-1">${fw?D[d]+' '+fX(addD(fw.start,d)):D[d]}</th><//>`)}</tr></thead>
 <tbody>${Array.from({length:nrows},(_,i)=>html`<tr key=${i}>${i===0&&html`<td rowSpan=${nrows} class="border border-slate-400 text-center font-bold text-lg w-12">${fw?fw.n:''}</td>`}
 ${[0,1,2,3,4].map(d=>{const k=(fw?fw.n:0)+'|'+d,e=(dm[k]||[])[i];const bad=e&&(restr[k]||[]).includes(e.finca);
-return html`<${React.Fragment} key=${d}><td class=${'border border-slate-300 h-7 '+(e&&!e.placa?'bg-amber-50':'')}>${e&&html`<input value=${e.placa} placeholder="agregar placa" onChange=${ev=>setE(k,i,{placa:ev.target.value.toUpperCase()})} class="w-full px-1 bg-transparent outline-none focus:bg-yellow-50 placeholder:text-amber-500 placeholder:text-xs" style=${{minWidth:80}}/>`}</td><td class="border border-slate-300 font-bold text-center">${e&&html`<input value=${e.oc} onChange=${ev=>setE(k,i,{oc:ev.target.value})} class="w-full px-1 bg-transparent outline-none text-center font-bold focus:bg-yellow-50" style=${{minWidth:60}}/>`}</td>
+return html`<${React.Fragment} key=${d}><td class=${'border border-slate-300 h-7 '+(e&&!e.placa?'bg-amber-50':'')}>${e&&html`<input value=${e.placa} placeholder="agregar placa" onChange=${ev=>setE(k,i,{placa:ev.target.value.toUpperCase()})} class="w-full px-1 bg-transparent outline-none focus:bg-yellow-50 placeholder:text-amber-500 placeholder:text-xs" style=${{minWidth:75}}/>`}</td><td class="border border-slate-300 font-bold text-center">${e&&html`<input value=${e.oc} onChange=${ev=>setE(k,i,{oc:ev.target.value})} class="w-full px-1 bg-transparent outline-none text-center font-bold focus:bg-yellow-50" style=${{minWidth:55}}/>`}</td><td class="border border-slate-300 font-bold text-center">${e&&html`<input type="number" min="0" value=${e.btos||''} placeholder="0" onChange=${ev=>setE(k,i,{btos:ev.target.value})} class="w-full px-1 bg-transparent outline-none text-center font-bold focus:bg-yellow-50 placeholder:text-slate-300" style=${{minWidth:50}}/>`}</td>
 <td class=${'border border-slate-300 px-1 font-bold '+(e?(bad?'bg-red-600 text-white':bdg(e.finca)):'')}>${e&&html`<span class="flex justify-between gap-1">${e.finca}<button onClick=${()=>delE(k,i)} title="Eliminar">${Ic('x',12)}</button></span>`}</td><//>`})}</tr>`)}</tbody></table></div>
 <div class="mt-2 text-xs text-slate-500 flex gap-3 flex-wrap"><span class="px-2 rounded bg-emerald-100 text-emerald-800">Orgánica</span><span class="px-2 rounded bg-sky-100 text-sky-800">Convencional</span><span class="px-2 rounded bg-amber-100 text-amber-800">Placa pendiente (clic en la celda para escribirla)</span><span class="px-2 rounded bg-red-600 text-white">Cruce con aspersión (agregado después)</span></div>`}
 </div>`}
